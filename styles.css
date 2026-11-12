@@ -302,6 +302,76 @@ a {
   max-width: 36ch;
 }
 
+.compare-wrap {
+  margin-top: 1.75rem;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.compare-table {
+  width: 100%;
+  min-width: 18.5rem;
+  border-collapse: collapse;
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+.compare-table th,
+.compare-table td {
+  padding: 0.85rem 0.7rem;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid rgba(26, 35, 50, 0.08);
+}
+
+.compare-table thead th {
+  font-family: Syne, "Noto Sans SC", sans-serif;
+  font-weight: 700;
+  font-size: 0.88rem;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+  border-bottom: 1px solid rgba(14, 107, 110, 0.28);
+  white-space: nowrap;
+}
+
+.compare-table thead th:first-child {
+  color: var(--ink-soft);
+  font-family: "Noto Sans SC", system-ui, sans-serif;
+  font-weight: 500;
+}
+
+.compare-table tbody th {
+  font-weight: 600;
+  color: var(--ink);
+  width: 28%;
+}
+
+.compare-table td {
+  color: var(--ink-soft);
+  width: 36%;
+}
+
+.compare-table td.is-better {
+  color: var(--ocean-deep);
+  font-weight: 500;
+}
+
+.compare-table tbody tr:last-child th,
+.compare-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+@media (min-width: 640px) {
+  .compare-table th,
+  .compare-table td {
+    padding: 0.95rem 0.85rem;
+  }
+
+  .compare-table {
+    font-size: 0.98rem;
+  }
+}
+
 .steps {
   list-style: none;
   margin: 2rem 0 0;
