@@ -1,0 +1,65 @@
+name: Deploy Website
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "index.html"
+      - "styles.css"
+      - "favicon.svg"
+      - "deploy/**"
+      - ".github/workflows/deploy-website.yml"
+  release:
+    types: [published]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-imgmesh-website
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare SSH key
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Sync site to server
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          rsync -avz \
+            -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new" \
+            --delete \
+            --exclude '.git/' \
+            --exclude '.github/' \
+            --exclude 'deploy/' \
+            --exclude 'README.md' \
+            ./ "${SSH_USER}@${SSH_HOST}:/var/www/imgmesh/"
+
+      - name: Ensure nginx site enabled
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+            if [ -f /etc/nginx/sites-available/imgmesh ] || [ -f /var/www/imgmesh/deploy/nginx-imgmesh.conf ]; then
+              if [ -f /var/www/imgmesh/deploy/nginx-imgmesh.conf ] && [ ! -f /etc/nginx/sites-available/imgmesh ]; then
+                cp /var/www/imgmesh/deploy/nginx-imgmesh.conf /etc/nginx/sites-available/imgmesh
+              fi
+              ln -sfn /etc/nginx/sites-available/imgmesh /etc/nginx/sites-enabled/imgmesh
+              nginx -t
+              systemctl reload nginx
+            fi
+            ls -la /var/www/imgmesh
