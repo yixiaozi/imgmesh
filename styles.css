@@ -57,12 +57,25 @@ a {
 }
 
 .brand {
-  font-family: Syne, "Noto Sans SC", sans-serif;
-  font-weight: 800;
-  font-size: 1.15rem;
-  letter-spacing: -0.03em;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-family: Outfit, "Noto Sans SC", system-ui, sans-serif;
+  font-weight: 600;
+  font-size: 1.12rem;
+  letter-spacing: 0.01em;
   color: var(--ink);
   text-decoration: none;
+}
+
+.brand-logo {
+  display: block;
+  flex-shrink: 0;
+  border-radius: 0.4rem;
+}
+
+.brand-logo-lg {
+  border-radius: 0.55rem;
 }
 
 .brand:hover,
@@ -85,12 +98,15 @@ a {
 }
 
 .brand-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
   margin: 0 0 0.85rem;
-  font-family: Syne, sans-serif;
-  font-weight: 800;
-  font-size: clamp(2.6rem, 9vw, 4.2rem);
-  letter-spacing: -0.05em;
-  line-height: 0.95;
+  font-family: Outfit, system-ui, sans-serif;
+  font-weight: 600;
+  font-size: clamp(2.2rem, 7.5vw, 3.4rem);
+  letter-spacing: 0.015em;
+  line-height: 1.05;
   color: var(--ocean);
   opacity: 0;
   animation: rise 0.9s var(--ease) 0.05s forwards;
@@ -306,11 +322,14 @@ a {
   margin-top: 1.75rem;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
+  border: 1px solid rgba(14, 107, 110, 0.22);
+  border-radius: 0.75rem;
+  background: rgba(255, 255, 255, 0.55);
 }
 
 .compare-table {
   width: 100%;
-  min-width: 18.5rem;
+  min-width: 20rem;
   border-collapse: collapse;
   font-size: 0.92rem;
   line-height: 1.45;
@@ -318,19 +337,19 @@ a {
 
 .compare-table th,
 .compare-table td {
-  padding: 0.85rem 0.7rem;
+  padding: 0.85rem 0.75rem;
   text-align: left;
   vertical-align: top;
-  border-bottom: 1px solid rgba(26, 35, 50, 0.08);
+  border: 1px solid rgba(26, 35, 50, 0.1);
 }
 
 .compare-table thead th {
-  font-family: Syne, "Noto Sans SC", sans-serif;
-  font-weight: 700;
-  font-size: 0.88rem;
-  letter-spacing: -0.02em;
+  font-family: Outfit, "Noto Sans SC", system-ui, sans-serif;
+  font-weight: 600;
+  font-size: 0.9rem;
+  letter-spacing: 0.01em;
   color: var(--ink);
-  border-bottom: 1px solid rgba(14, 107, 110, 0.28);
+  background: rgba(14, 107, 110, 0.08);
   white-space: nowrap;
 }
 
@@ -344,6 +363,7 @@ a {
   font-weight: 600;
   color: var(--ink);
   width: 28%;
+  background: rgba(243, 246, 245, 0.65);
 }
 
 .compare-table td {
@@ -354,17 +374,13 @@ a {
 .compare-table td.is-better {
   color: var(--ocean-deep);
   font-weight: 500;
-}
-
-.compare-table tbody tr:last-child th,
-.compare-table tbody tr:last-child td {
-  border-bottom: none;
+  background: rgba(14, 107, 110, 0.04);
 }
 
 @media (min-width: 640px) {
   .compare-table th,
   .compare-table td {
-    padding: 0.95rem 0.85rem;
+    padding: 0.95rem 0.9rem;
   }
 
   .compare-table {
@@ -397,8 +413,8 @@ a {
   border-radius: 0.45rem;
   background: var(--paper-deep);
   color: var(--ocean-deep);
-  font-family: Syne, sans-serif;
-  font-weight: 700;
+  font-family: Outfit, system-ui, sans-serif;
+  font-weight: 600;
   font-size: 0.95rem;
   display: grid;
   place-items: center;

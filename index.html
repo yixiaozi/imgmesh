@@ -6,20 +6,28 @@
   <meta name="description" content="imgmesh：别再让微信里的照片过期消失。用加密链接分享旅行照片；端到端加密，下载可追踪，对方随时能看、能存进相册。" />
   <meta name="theme-color" content="#0e6b6e" />
   <title>imgmesh</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/favicon.svg" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600&family=Noto+Serif+SC:wght@500;600;700&family=Syne:wght@700;800&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600&family=Noto+Serif+SC:wght@500;600;700&family=Outfit:wght@500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <header class="site-header">
-    <a class="brand" href="/">imgmesh</a>
+    <a class="brand" href="/">
+      <img class="brand-logo" src="/favicon.svg" width="28" height="28" alt="" />
+      <span>imgmesh</span>
+    </a>
   </header>
 
   <main>
     <section class="hero" aria-labelledby="hero-title">
       <div class="hero-copy">
-        <p class="brand-mark" aria-hidden="true">imgmesh</p>
+        <p class="brand-mark" aria-hidden="true">
+          <img class="brand-logo brand-logo-lg" src="/favicon.svg" width="44" height="44" alt="" />
+          <span>imgmesh</span>
+        </p>
         <h1 id="hero-title">别再让照片过期消失</h1>
         <p class="lede">有人微信发来一堆旅行照，你没及时下载，过期就没了——永远找不回来。imgmesh 用加密链接分享：选照片、生成链接发出去；对方随时能在浏览器看，装了 App 还能直接存进相册。</p>
         <div class="cta-row">
@@ -41,17 +49,12 @@
             <span class="rail-lock">钥</span>
           </div>
           <div class="link-chip">
-            <span class="chip- proto">https</span>
+            <span class="chip-proto">https</span>
             <span class="chip-host">imgmesh.com/s/</span>
             <span class="chip-key">a7f3…#k=·</span>
           </div>
         </div>
       </div>
-    </section>
-
-    <section class="section pain" aria-labelledby="pain-title">
-      <h2 id="pain-title">微信里的照片，会过期</h2>
-      <p class="section-lead">别人发给你的图，没来得及点开保存，过几天就失效了——聊天记录还在，照片没了。反过来，你塞满群聊的原图，对方也未必下得完。大图不该赌时效，该有一份能反复打开的加密链接。</p>
     </section>
 
     <section class="section compare" id="compare" aria-labelledby="compare-title">
@@ -159,7 +162,12 @@
   </main>
 
   <footer class="site-footer">
-    <p><a class="brand" href="/">imgmesh</a></p>
+    <p>
+      <a class="brand" href="/">
+        <img class="brand-logo" src="/favicon.svg" width="22" height="22" alt="" />
+        <span>imgmesh</span>
+      </a>
+    </p>
     <p class="fine">© <span id="y"></span> imgmesh.com</p>
   </footer>
 
