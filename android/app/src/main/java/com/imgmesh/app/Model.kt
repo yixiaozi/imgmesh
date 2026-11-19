@@ -143,7 +143,7 @@ class MeshModel(app: Application) : AndroidViewModel(app) {
             return
         }
         if (!session.appleLinked) {
-            stateFlow.update { it.copy(error = "创建分享还要绑定 Apple。安卓现在可以打开链接、看身份证，并把照片存进相册。") }
+            stateFlow.update { it.copy(error = "先用 Apple 登录，再分享照片。") }
             return
         }
         if (uris.isEmpty()) return
@@ -242,7 +242,7 @@ class MeshModel(app: Application) : AndroidViewModel(app) {
             val shares = listOf(local) + vault.loadShares().filter { it.id != local.id }
             vault.saveShares(shares)
             stateFlow.update {
-                it.copy(shares = shares, link = makeShareUrl(shareText, masterText), status = "链接已经准备好。发出去时要带上井号后面的密钥。")
+                it.copy(shares = shares, link = makeShareUrl(shareText, masterText), status = "链接已经准备好。发出去时要带上井号后面的密钥。以后还可以往这条链接里加照片。")
             }
         }
     }
@@ -269,7 +269,10 @@ class MeshModel(app: Application) : AndroidViewModel(app) {
             stateFlow.update { it.copy(error = "先登记这台设备的名称。") }
             return
         }
-        launchIo {
+        launchIo { loadGallery(session, share) }
+    }
+
+    private fun loadGallery(session: Session, share: LocalShare) {
             stateFlow.update { it.copy(openShare = share, gallery = emptyList(), cards = emptyMap(), activity = null, selected = -1, status = "正在解密") }
             val shareId = Seal.decode(share.id)
             val master = Seal.decode(share.masterKey)
@@ -332,6 +335,127 @@ class MeshModel(app: Application) : AndroidViewModel(app) {
                     error = "",
                 )
             }
+            absorbNew(session, titled, photos)
+    }
+
+    fun addPhotos(uris: List<android.net.Uri>) {
+        val session = state.value.session
+        val share = state.value.openShare
+        if (session == null) {
+            stateFlow.update { it.copy(error = "先登记这台设备的名称。") }
+            return
+        }
+        if (share == null) return
+        if (!session.appleLinked) {
+            stateFlow.update { it.copy(error = "先用 Apple 登录，再添加照片。") }
+            return
+        }
+        if (uris.isEmpty()) return
+        launchIo {
+            val current = share
+            val gallery = state.value.gallery
+            if (gallery.isEmpty() && current.photoCount != 0) {
+                stateFlow.update { it.copy(error = "先等原来的照片打开，再添加。") }
+                return@launchIo
+            }
+            if (gallery.size + uris.size > 200) {
+                stateFlow.update { it.copy(error = "一条链接最多 200 张。") }
+                return@launchIo
+            }
+            val context = getApplication<Application>()
+            val shareId = Seal.decode(current.id)
+            val master = Seal.decode(current.masterKey)
+            val tag = Seal.encode(Seal.accessTag(master, shareId))
+            val fileKey = Seal.derive(master, shareId, Seal.INFO_FILE)
+            val items = JSONArray()
+            gallery.forEach { photo ->
+                val item = JSONObject()
+                    .put("id", photo.id)
+                    .put("name", photo.name)
+                    .put("mime", photo.mime)
+                    .put("bytes", photo.byteCount)
+                    .put("nonce", photo.nonce)
+                photo.sha256?.let { item.put("sha256", it) }
+                if (!photo.thumbId.isNullOrBlank() && !photo.thumbNonce.isNullOrBlank()) {
+                    item.put(
+                        "thumb",
+                        JSONObject().put("id", photo.thumbId).put("bytes", photo.thumbBytes).put("nonce", photo.thumbNonce),
+                    )
+                }
+                items.put(item)
+            }
+            val blobs = linkedMapOf<String, ByteArray>()
+            val claims = JSONArray()
+            uris.forEachIndexed { index, uri ->
+                stateFlow.update { it.copy(status = "正在加密新增 ${index + 1}/${uris.size}") }
+                val photo = loadPhoto(context, uri, gallery.size + index)
+                val objectId = Seal.random(16)
+                val nonce = Seal.random(12)
+                val objectText = Seal.encode(objectId)
+                blobs[objectText] = Seal.encrypt(fileKey, nonce, Seal.aad(shareId, objectId), photo.data)
+                val fingerprint = Seal.fingerprint(photo.data)
+                claims.put(JSONObject().put("sha256", fingerprint).put("kind", "shared"))
+                val item = JSONObject()
+                    .put("id", objectText)
+                    .put("name", photo.name)
+                    .put("mime", photo.mime)
+                    .put("bytes", photo.data.size)
+                    .put("nonce", Seal.encode(nonce))
+                    .put("sha256", fingerprint)
+                thumbnail(photo.data)?.let { jpeg ->
+                    val thumbId = Seal.random(16)
+                    val thumbNonce = Seal.random(12)
+                    val thumbText = Seal.encode(thumbId)
+                    blobs[thumbText] = Seal.encrypt(fileKey, thumbNonce, Seal.aad(shareId, thumbId), jpeg)
+                    item.put("thumb", JSONObject().put("id", thumbText).put("bytes", jpeg.size).put("nonce", Seal.encode(thumbNonce)))
+                }
+                items.put(item)
+            }
+            val manifestPlain = JSONObject()
+                .put("v", 1)
+                .put("title", current.title)
+                .put("items", items)
+                .toString()
+                .toByteArray(StandardCharsets.UTF_8)
+            val manifestId = Seal.random(16)
+            val manifestNonce = Seal.random(12)
+            val manifestText = Seal.encode(manifestId)
+            val manifestKey = Seal.derive(master, shareId, Seal.INFO_MANIFEST)
+            blobs[manifestText] = Seal.encrypt(manifestKey, manifestNonce, Seal.aad(shareId, manifestId), manifestPlain)
+            val objects = JSONArray()
+            for (i in gallery.size until items.length()) {
+                val item = items.getJSONObject(i)
+                objects.put(objectPayload(item.getString("id"), "original", item.getInt("bytes"), blobs.getValue(item.getString("id")).size))
+                if (item.has("thumb")) {
+                    val thumb = item.getJSONObject("thumb")
+                    objects.put(objectPayload(thumb.getString("id"), "thumb", thumb.getInt("bytes"), blobs.getValue(thumb.getString("id")).size))
+                }
+            }
+            objects.put(objectPayload(manifestText, "manifest", manifestPlain.size, blobs.getValue(manifestText).size))
+            stateFlow.update { it.copy(status = "正在上传") }
+            val plans = api.reserve(session.token, current.id, objects)
+            val completed = JSONArray()
+            plans.forEach { plan ->
+                val payload = blobs[plan.id] ?: throw IllegalStateException("上传计划对不上。")
+                val parts = JSONArray()
+                if (!plan.ready) {
+                    var offset = 0
+                    val chunk = if (plan.partSize > 0) plan.partSize else payload.size
+                    plan.parts.forEach { part ->
+                        val end = if (part.partNumber == 0) payload.size else minOf(offset + maxOf(chunk, 1), payload.size)
+                        val etag = api.put(part.url, payload.copyOfRange(offset, end))
+                        parts.put(JSONObject().put("partNumber", part.partNumber).put("etag", etag))
+                        if (part.partNumber > 0) offset = end
+                    }
+                }
+                completed.put(JSONObject().put("id", plan.id).put("byteSize", payload.size).put("parts", parts))
+            }
+            api.complete(session.token, current.id, completed, manifestText, Seal.encode(manifestNonce))
+            runCatching { api.claim(session.token, current.id, tag, claims) }
+            loadGallery(session, current)
+            if (!state.value.status.startsWith("新的")) {
+                stateFlow.update { it.copy(status = "已经加进原来的链接。选过自动保存的人再打开时会收到，后来打开的人也可以直接保存。", error = "") }
+            }
         }
     }
 
@@ -358,7 +482,33 @@ class MeshModel(app: Application) : AndroidViewModel(app) {
 
     fun saveAll() {
         if (state.value.gallery.isEmpty()) return
-        savePhotos(state.value.gallery.indices.toList())
+        savePhotos(state.value.gallery.indices.toList(), follow = true)
+    }
+
+    fun setAutoSave(on: Boolean) {
+        val session = state.value.session
+        val share = state.value.openShare
+        if (session == null || share == null) {
+            stateFlow.update { it.copy(error = "先登记这台设备的名称。") }
+            return
+        }
+        launchIo {
+            val shareId = Seal.decode(share.id)
+            val access = Seal.encode(Seal.accessTag(Seal.decode(share.masterKey), shareId))
+            api.follow(session.token, share.id, access, on)
+            val updated = share.copy(autoSave = on)
+            val shares = vault.loadShares().map { if (it.id == updated.id) updated else it }
+            vault.saveShares(shares)
+            stateFlow.update {
+                it.copy(
+                    shares = shares,
+                    openShare = updated,
+                    status = if (on) "已打开自动保存。以后新增的照片会在打开时存进相册。" else "已关闭自动保存。",
+                    error = "",
+                )
+            }
+            if (on) absorbNew(session, updated, state.value.gallery)
+        }
     }
 
     fun remove(share: LocalShare) {
@@ -407,7 +557,7 @@ class MeshModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun savePhotos(indexes: List<Int>) {
+    private fun savePhotos(indexes: List<Int>, follow: Boolean = false) {
         val session = state.value.session ?: return
         val share = state.value.openShare ?: return
         launchIo {
@@ -430,7 +580,50 @@ class MeshModel(app: Application) : AndroidViewModel(app) {
             runCatching { api.event(session.token, share.id, access, "save") }
             runCatching { api.claim(session.token, share.id, access, claims) }
             val cards = refreshCards(session.token, gallery)
-            stateFlow.update { it.copy(gallery = gallery, cards = cards, status = "已经存进相册，并写进照片身份证。", error = "") }
+            var shown = share
+            var shares = vault.loadShares()
+            var status = "已经存进相册，并写进照片身份证。"
+            if (follow) {
+                runCatching { api.follow(session.token, share.id, access, true) }
+                shown = share.copy(autoSave = true, savedIDs = gallery.map { it.id })
+                shares = shares.map { if (it.id == shown.id) shown else it }
+                vault.saveShares(shares)
+                status = "已经存进相册。以后这条链接再增加照片，打开时会自动保存。"
+            }
+            stateFlow.update {
+                it.copy(shares = shares, openShare = shown, gallery = gallery, cards = cards, status = status, error = "")
+            }
+        }
+    }
+
+    private fun absorbNew(session: Session, share: LocalShare, photos: List<GalleryPhoto>) {
+        if (!share.autoSave) return
+        val known = share.savedIDs.toSet()
+        val fresh = photos.filter { it.id !in known }
+        if (fresh.isEmpty()) return
+        val files = mutableListOf<Pair<String, ByteArray>>()
+        val claims = JSONArray()
+        fresh.forEach { photo ->
+            val bytes = original(session, share, photo)
+            val sha = photo.sha256?.takeIf { it.isNotEmpty() } ?: Seal.fingerprint(bytes)
+            files += photo.name to bytes
+            claims.put(JSONObject().put("sha256", sha).put("kind", "saved"))
+        }
+        saveToGallery(getApplication(), files)
+        val shareId = Seal.decode(share.id)
+        val access = Seal.encode(Seal.accessTag(Seal.decode(share.masterKey), shareId))
+        runCatching { api.event(session.token, share.id, access, "save") }
+        runCatching { api.claim(session.token, share.id, access, claims) }
+        val updated = share.copy(savedIDs = share.savedIDs + fresh.map { it.id })
+        val shares = vault.loadShares().map { if (it.id == updated.id) updated else it }
+        vault.saveShares(shares)
+        stateFlow.update {
+            it.copy(
+                shares = shares,
+                openShare = if (it.openShare?.id == updated.id) updated else it.openShare,
+                status = "新的 ${fresh.size} 张已经自动存进相册。",
+                error = "",
+            )
         }
     }
 

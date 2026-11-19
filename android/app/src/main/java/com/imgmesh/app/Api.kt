@@ -67,7 +67,7 @@ class Api(private val baseUrl: String = "https://imgmesh.com") {
 
     data class ListedManifest(val id: String, val nonce: String, val url: String)
     data class ActivityRow(val displayName: String, val client: String, val count: Int, val savedAt: String)
-    data class Activity(val viewed: List<ActivityRow>, val downloaded: List<ActivityRow>, val phones: List<ActivityRow>)
+    data class Activity(val viewed: List<ActivityRow>, val downloaded: List<ActivityRow>, val phones: List<ActivityRow>, val followers: List<ActivityRow>)
 
     fun register(deviceId: String, displayName: String): Account {
         val body = JSONObject()
@@ -167,6 +167,10 @@ class Api(private val baseUrl: String = "https://imgmesh.com") {
         call("/v1/shares/$shareId", "DELETE", token, null, null)
     }
 
+    fun follow(token: String, shareId: String, access: String, on: Boolean) {
+        call("/v1/shares/$shareId/follow", if (on) "POST" else "DELETE", token, access, null)
+    }
+
     fun manifest(token: String, shareId: String, access: String): ListedManifest {
         val item = JSONObject(call("/v1/shares/$shareId/manifest", "GET", token, access, null))
         return ListedManifest(item.getString("id"), item.getString("nonce"), item.getString("url"))
@@ -196,6 +200,7 @@ class Api(private val baseUrl: String = "https://imgmesh.com") {
                 viewed = rows(item.optJSONArray("viewed")),
                 downloaded = rows(item.optJSONArray("downloaded")),
                 phones = rows(item.optJSONArray("phones")),
+                followers = rows(item.optJSONArray("followers")),
             )
         } catch (error: ApiException) {
             if (error.code == "not_found") null else throw error

@@ -1,5 +1,6 @@
 package com.imgmesh.app
 
+import android.content.Intent
 import android.graphics.BitmapFactory
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -31,6 +32,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.lightColorScheme
@@ -47,6 +49,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -87,6 +90,7 @@ private fun RegisterScreen(state: UiState, model: MeshModel) {
 private fun HomeScreen(state: UiState, model: MeshModel) {
     val session = state.session ?: return
     val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
     var pasted by remember { mutableStateOf("") }
     var title by remember { mutableStateOf("") }
     val pick = rememberLauncherForActivityResult(PickMultipleVisualMedia(200)) { uris ->
@@ -119,13 +123,19 @@ private fun HomeScreen(state: UiState, model: MeshModel) {
         OutlinedTextField(title, { title = it }, label = { Text("标题，例如三亚") }, modifier = Modifier.fillMaxWidth())
         Button(
             onClick = { pick.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly)) },
-            enabled = !state.busy && session.appleLinked,
+            enabled = !state.busy,
             colors = ButtonDefaults.buttonColors(containerColor = Ocean),
         ) { Text("选择照片") }
-        if (!session.appleLinked) Text("这台设备还没有绑定 Apple，不能创建新的分享。", color = Ink)
+        if (!session.appleLinked) Text("分享和撤销需要 Apple 登录。查看和保存只用上面的名称。", color = Ink)
         if (state.link.isNotEmpty()) {
             SelectionContainer { Text(state.link, color = Ink) }
-            TextButton(onClick = { clipboard.setText(AnnotatedString(state.link)) }) { Text("复制链接") }
+            Row {
+                TextButton(onClick = { clipboard.setText(AnnotatedString(state.link)) }) { Text("复制链接") }
+                TextButton(onClick = {
+                    val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, state.link)
+                    context.startActivity(Intent.createChooser(send, "发出链接"))
+                }) { Text("发出链接") }
+            }
         }
         Text("我的链接", fontWeight = FontWeight.SemiBold, color = Ink)
         if (state.shares.isEmpty()) Text("还没有分享。")
@@ -143,7 +153,10 @@ private fun HomeScreen(state: UiState, model: MeshModel) {
 
 @Composable
 private fun GalleryScreen(state: UiState, model: MeshModel) {
-    val share = state.openShare ?: return
+    val share = state.shares.firstOrNull { it.id == state.openShare?.id } ?: state.openShare ?: return
+    val addPick = rememberLauncherForActivityResult(PickMultipleVisualMedia(200)) { uris ->
+        model.addPhotos(uris)
+    }
     Column(Modifier.fillMaxSize()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = model::closeGallery) { Text("返回") }
@@ -167,17 +180,28 @@ private fun GalleryScreen(state: UiState, model: MeshModel) {
                 }
             }
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Button(onClick = model::saveAll, enabled = state.gallery.isNotEmpty() && !state.busy, colors = ButtonDefaults.buttonColors(containerColor = Ocean)) { Text("保存到相册") }
-            TextButton(onClick = { model.remove(share) }) { Text("从列表移除") }
-            if (share.role == "sent" && state.session?.appleLinked == true) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("自动保存新增照片", color = Ink, modifier = Modifier.weight(1f))
+                Switch(checked = share.autoSave, onCheckedChange = model::setAutoSave, enabled = state.session != null && !state.busy)
+            }
+            if (share.role == "sent") {
+                Button(
+                    onClick = { addPick.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly)) },
+                    enabled = !state.busy && state.session?.appleLinked == true,
+                ) { Text("添加照片") }
                 TextButton(onClick = { model.revoke(share) }) { Text("撤销链接") }
             }
+            TextButton(onClick = { model.remove(share) }) { Text("从 imgmesh 移除") }
         }
-        state.activity?.let { activity ->
-            Text("谁查看过：" + names(activity.viewed), color = Ink)
-            Text("谁下载过：" + names(activity.downloaded), color = Ink)
-            Text("在这些手机里：" + activity.phones.joinToString("、") { it.displayName.ifBlank { "未命名" } }.ifBlank { "还没有" }, color = Ink)
+        if (share.role == "sent") {
+            state.activity?.let { activity ->
+                Text("谁查看过：" + activityLine(activity.viewed), color = Ink)
+                Text("谁下载过：" + activityLine(activity.downloaded), color = Ink)
+                Text("保存在这些设备里：" + activityLine(activity.phones), color = Ink)
+                Text("会自动下载新照片：" + activityLine(activity.followers), color = Ink)
+            }
         }
     }
 }
@@ -211,7 +235,7 @@ private fun IdentityCard(state: UiState, model: MeshModel, modifier: Modifier = 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             TextButton(onClick = { model.step(-1) }) { Text("上一张") }
             TextButton(onClick = { model.step(1) }) { Text("下一张") }
-            Button(onClick = model::saveSelected, enabled = !state.busy, colors = ButtonDefaults.buttonColors(containerColor = Ocean)) { Text("保存这张") }
+            Button(onClick = model::saveAll, enabled = !state.busy, colors = ButtonDefaults.buttonColors(containerColor = Ocean)) { Text("保存到相册") }
             TextButton(onClick = { model.select(-1) }) { Text("关闭") }
         }
     }
@@ -264,7 +288,23 @@ private fun saverLine(saver: Api.PhotoHolder): String {
     return if (from != null && from.id != saver.id) "${saver.displayName}，保存自 ${from.displayName}" else "${saver.displayName}，自己留下的"
 }
 
-private fun names(rows: List<Api.ActivityRow>): String =
-    rows.joinToString("、") { it.displayName.ifBlank { "未命名" } }.ifBlank { "还没有" }
+private fun activityLine(rows: List<Api.ActivityRow>): String {
+    if (rows.isEmpty()) return "还没有"
+    return rows.joinToString("、") { row ->
+        val who = row.displayName.ifBlank { "未命名" }
+        val place = when (row.client) {
+            "ios" -> "iPhone"
+            "desktop" -> "电脑"
+            else -> "浏览器"
+        }
+        if (row.savedAt.isNotBlank()) {
+            "$who · $place · ${if (row.client == "desktop") "已存进文件夹" else "已存进相册"}"
+        } else if (row.count > 0) {
+            "$who · $place · ${row.count} 次"
+        } else {
+            "$who · $place"
+        }
+    }
+}
 
 private fun shortId(id: String): String = "IM-${id.take(4)} ${id.drop(4).take(4)}"

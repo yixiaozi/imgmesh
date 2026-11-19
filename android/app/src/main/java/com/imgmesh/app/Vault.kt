@@ -24,6 +24,8 @@ data class LocalShare(
     val role: String,
     val photoCount: Int,
     val createdAt: Long,
+    val autoSave: Boolean = false,
+    val savedIDs: List<String> = emptyList(),
 )
 
 class Vault(context: Context) {
@@ -95,6 +97,10 @@ class Vault(context: Context) {
                     role = item.optString("role", "received"),
                     photoCount = item.optInt("photoCount"),
                     createdAt = item.optLong("createdAt"),
+                    autoSave = item.optBoolean("autoSave"),
+                    savedIDs = item.optJSONArray("savedIDs")?.let { ids ->
+                        (0 until ids.length()).map { ids.optString(it) }.filter { it.isNotEmpty() }
+                    }.orEmpty(),
                 )
             }
         } catch (_: Exception) {
@@ -112,7 +118,9 @@ class Vault(context: Context) {
                     .put("title", share.title)
                     .put("role", share.role)
                     .put("photoCount", share.photoCount)
-                    .put("createdAt", share.createdAt),
+                    .put("createdAt", share.createdAt)
+                    .put("autoSave", share.autoSave)
+                    .put("savedIDs", JSONArray(share.savedIDs)),
             )
         }
         prefs.edit().putString("shares", array.toString()).apply()
