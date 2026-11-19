@@ -72,11 +72,12 @@
 
     <section class="tab-panel" id="panel-usage" data-panel="usage" role="tabpanel" aria-labelledby="tab-usage" hidden>
       <h2 id="usage-title">现在的使用情况</h2>
-      <p class="section-lead">用户和设备按登记计算。照片按已经传完的原图计算，撤销之后仍然保留。每 5 秒刷新。</p>
+      <p class="section-lead">用户和设备按登记计算。照片按已经传完的原图计算，撤销之后仍然保留。占用存储是还留在服务器上的密文，含缩略图，撤销后会减少。每 5 秒刷新。</p>
       <div class="usage-grid">
         <article><strong id="stat-users">–</strong><span>用户</span></article>
         <article><strong id="stat-devices">–</strong><span>设备</span></article>
         <article><strong id="stat-photos">–</strong><span>已传输的照片</span></article>
+        <article><strong id="stat-storage">–</strong><span>占用存储</span></article>
       </div>
       <p class="usage-updated" id="stat-updated">正在读取</p>
       <ol class="usage-feed" id="stat-feed"></ol>
@@ -213,6 +214,14 @@
       return "浏览器";
     }
 
+    function storageSize(bytes) {
+      const n = Number(bytes) || 0;
+      if (n < 1024) return n + " B";
+      if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+      if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + " MB";
+      return (n / 1024 / 1024 / 1024).toFixed(2) + " GB";
+    }
+
     function usageTime(value) {
       const date = new Date(value);
       if (Number.isNaN(date.getTime())) return "";
@@ -229,6 +238,7 @@
         document.querySelector("#stat-users").textContent = Number(body.users || 0).toLocaleString("zh-CN");
         document.querySelector("#stat-devices").textContent = Number(body.devices || 0).toLocaleString("zh-CN");
         document.querySelector("#stat-photos").textContent = Number(body.photosTransferred || 0).toLocaleString("zh-CN");
+        document.querySelector("#stat-storage").textContent = storageSize(body.storageBytes);
         const feed = document.querySelector("#stat-feed");
         feed.replaceChildren();
         const activity = Array.isArray(body.activity) ? body.activity : [];

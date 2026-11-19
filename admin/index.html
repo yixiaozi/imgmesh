@@ -33,6 +33,7 @@
         <article><strong id="n-devices">–</strong><span>设备</span></article>
         <article><strong id="n-shares">–</strong><span>分享</span></article>
         <article><strong id="n-photos">–</strong><span>已传输的照片</span></article>
+        <article><strong id="n-storage">–</strong><span>占用存储</span></article>
       </div>
       <p class="usage-updated" id="updated">正在读取</p>
       <div class="tabs" role="tablist" aria-label="明细">
@@ -67,7 +68,8 @@
       const n = Number(bytes) || 0;
       if (n < 1024) return n + " B";
       if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
-      return (n / 1024 / 1024).toFixed(1) + " MB";
+      if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + " MB";
+      return (n / 1024 / 1024 / 1024).toFixed(2) + " GB";
     }
 
     function table(headers, rows) {
@@ -141,6 +143,7 @@
       document.querySelector("#n-devices").textContent = Number(body.devices || 0).toLocaleString("zh-CN");
       document.querySelector("#n-shares").textContent = Number(body.shares || 0).toLocaleString("zh-CN");
       document.querySelector("#n-photos").textContent = Number(body.photosTransferred || 0).toLocaleString("zh-CN");
+      document.querySelector("#n-storage").textContent = size(body.storageBytes);
       const people = document.querySelector('[data-panel="people"]');
       const shares = document.querySelector('[data-panel="shares"]');
       const photos = document.querySelector('[data-panel="photos"]');
@@ -148,11 +151,11 @@
       people.replaceChildren(table(["名称", "城市", "设备", "设备号", "登记时间"], (body.people || []).map((row) => [
         row.name || "未命名", row.city || "—", platformText[row.platform] || row.platform || "—", row.deviceId || "—", when(row.createdAt),
       ])));
-      shares.replaceChildren(table(["分享", "谁发出的", "张数", "大小", "状态", "时间"], (body.shareList || []).map((row) => [
-        row.id, row.owner || "未命名", String(row.photos), size(row.bytes), row.revoked ? "已撤销" : "有效", when(row.createdAt),
+      shares.replaceChildren(table(["分享", "谁发出的", "张数", "原图", "占用", "状态", "时间"], (body.shareList || []).map((row) => [
+        row.id, row.owner || "未命名", String(row.photos), size(row.bytes), size(row.stored), row.revoked ? "已撤销" : "有效", when(row.createdAt),
       ])));
-      photos.replaceChildren(table(["谁的", "原图大小", "状态", "时间"], (body.photos || []).map((row) => [
-        row.owner || "未命名", size(row.bytes), row.status === "ready" ? "已传完" : "未完成", when(row.at),
+      photos.replaceChildren(table(["谁的", "原图大小", "占用", "状态", "时间"], (body.photos || []).map((row) => [
+        row.owner || "未命名", size(row.bytes), size(row.stored), row.status === "ready" ? "已传完" : "未完成", when(row.at),
       ])));
       events.replaceChildren(table(["时间", "谁", "做了什么", "从哪"], (body.events || []).map((row) => [
         when(row.at), row.name || "未命名", kindText[row.kind] || row.kind, platformText[row.client] || row.client,

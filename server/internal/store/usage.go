@@ -16,6 +16,7 @@ type UsageSnapshot struct {
 	Users             int
 	Devices           int
 	PhotosTransferred int64
+	StorageBytes      int64
 	Activity          []UsageEvent
 }
 
@@ -26,8 +27,9 @@ func (s *Store) Usage(ctx context.Context) (UsageSnapshot, error) {
 		SELECT
 			(SELECT count(*) FROM users),
 			(SELECT count(*) FROM devices),
-			(SELECT photos_transferred FROM usage_totals)
-	`).Scan(&snap.Users, &snap.Devices, &snap.PhotosTransferred)
+			(SELECT photos_transferred FROM usage_totals),
+			(SELECT COALESCE(sum(byte_size), 0)::bigint FROM objects WHERE status = 'ready')
+	`).Scan(&snap.Users, &snap.Devices, &snap.PhotosTransferred, &snap.StorageBytes)
 	if err != nil {
 		return snap, err
 	}

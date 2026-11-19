@@ -20,6 +20,7 @@ type AdminShare struct {
 	Owner     string
 	Photos    int
 	Bytes     int64
+	Stored    int64
 	Revoked   bool
 	CreatedAt time.Time
 }
@@ -27,6 +28,7 @@ type AdminShare struct {
 type AdminPhoto struct {
 	Owner  string
 	Bytes  int64
+	Stored int64
 	Status string
 	At     time.Time
 }
@@ -43,6 +45,7 @@ type AdminOverview struct {
 	Devices           int
 	Shares            int
 	PhotosTransferred int64
+	StorageBytes      int64
 	People            []AdminUser
 	ShareList         []AdminShare
 	Photos            []AdminPhoto
@@ -60,8 +63,9 @@ func (s *Store) AdminOverview(ctx context.Context) (AdminOverview, error) {
 			(SELECT count(*) FROM users),
 			(SELECT count(*) FROM devices),
 			(SELECT count(*) FROM shares),
-			(SELECT photos_transferred FROM usage_totals)
-	`).Scan(&out.Users, &out.Devices, &out.Shares, &out.PhotosTransferred)
+			(SELECT photos_transferred FROM usage_totals),
+			(SELECT COALESCE(sum(byte_size), 0)::bigint FROM objects WHERE status = 'ready')
+	`).Scan(&out.Users, &out.Devices, &out.Shares, &out.PhotosTransferred, &out.StorageBytes)
 	if err != nil {
 		return out, err
 	}
@@ -88,7 +92,9 @@ func (s *Store) AdminOverview(ctx context.Context) (AdminOverview, error) {
 	}
 
 	shares, err := s.pool.Query(ctx, `
-		SELECT s.id, COALESCE(u.display_name, ''), s.photo_count, s.total_bytes, s.revoked_at IS NOT NULL, s.created_at
+		SELECT s.id, COALESCE(u.display_name, ''), s.photo_count, s.total_bytes,
+			COALESCE((SELECT sum(o.byte_size) FROM objects o WHERE o.share_id = s.id AND o.status = 'ready'), 0)::bigint,
+			s.revoked_at IS NOT NULL, s.created_at
 		FROM shares s
 		LEFT JOIN users u ON u.id = s.owner_id
 		ORDER BY s.created_at DESC
@@ -101,7 +107,7 @@ func (s *Store) AdminOverview(ctx context.Context) (AdminOverview, error) {
 	for shares.Next() {
 		var raw []byte
 		var row AdminShare
-		if err := shares.Scan(&raw, &row.Owner, &row.Photos, &row.Bytes, &row.Revoked, &row.CreatedAt); err != nil {
+		if err := shares.Scan(&raw, &row.Owner, &row.Photos, &row.Bytes, &row.Stored, &row.Revoked, &row.CreatedAt); err != nil {
 			return out, err
 		}
 		row.ID = id.Encode(raw)
@@ -112,7 +118,7 @@ func (s *Store) AdminOverview(ctx context.Context) (AdminOverview, error) {
 	}
 
 	photos, err := s.pool.Query(ctx, `
-		SELECT COALESCE(u.display_name, ''), o.plaintext_bytes, o.status, o.created_at
+		SELECT COALESCE(u.display_name, ''), o.plaintext_bytes, COALESCE(o.byte_size, 0), o.status, o.created_at
 		FROM objects o
 		JOIN shares s ON s.id = o.share_id
 		LEFT JOIN users u ON u.id = s.owner_id
@@ -126,7 +132,7 @@ func (s *Store) AdminOverview(ctx context.Context) (AdminOverview, error) {
 	defer photos.Close()
 	for photos.Next() {
 		var row AdminPhoto
-		if err := photos.Scan(&row.Owner, &row.Bytes, &row.Status, &row.At); err != nil {
+		if err := photos.Scan(&row.Owner, &row.Bytes, &row.Stored, &row.Status, &row.At); err != nil {
 			return out, err
 		}
 		out.Photos = append(out.Photos, row)

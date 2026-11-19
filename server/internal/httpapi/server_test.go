@@ -1011,6 +1011,7 @@ func TestUsageStats(t *testing.T) {
 		Users    int   `json:"users"`
 		Devices  int   `json:"devices"`
 		Photos   int64 `json:"photosTransferred"`
+		Storage  int64 `json:"storageBytes"`
 		Activity []struct {
 			Kind string `json:"kind"`
 			Name string `json:"name"`
@@ -1020,8 +1021,8 @@ func TestUsageStats(t *testing.T) {
 	if err := json.Unmarshal(body, &snap); err != nil {
 		t.Fatal(err)
 	}
-	if snap.Users != 2 || snap.Devices != 2 || snap.Photos != 1 {
-		t.Fatalf("stats users=%d devices=%d photos=%d %s", snap.Users, snap.Devices, snap.Photos, body)
+	if snap.Users != 2 || snap.Devices != 2 || snap.Photos != 1 || snap.Storage != 48 {
+		t.Fatalf("stats users=%d devices=%d photos=%d storage=%d %s", snap.Users, snap.Devices, snap.Photos, snap.Storage, body)
 	}
 	seen := false
 	for _, event := range snap.Activity {
@@ -1039,8 +1040,8 @@ func TestUsageStats(t *testing.T) {
 	if err := json.Unmarshal(body, &snap); err != nil {
 		t.Fatal(err)
 	}
-	if snap.Photos != 1 {
-		t.Fatalf("revoke changed the transfer count: %s", body)
+	if snap.Photos != 1 || snap.Storage != 0 {
+		t.Fatalf("revoke storage users=%d photos=%d storage=%d %s", snap.Users, snap.Photos, snap.Storage, body)
 	}
 }
 

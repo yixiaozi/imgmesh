@@ -32,13 +32,13 @@ func (s *Server) adminOverview(w http.ResponseWriter, r *http.Request) {
 	for _, share := range overview.ShareList {
 		shares = append(shares, map[string]any{
 			"id": share.ID, "owner": share.Owner, "photos": share.Photos,
-			"bytes": share.Bytes, "revoked": share.Revoked, "createdAt": share.CreatedAt,
+			"bytes": share.Bytes, "stored": share.Stored, "revoked": share.Revoked, "createdAt": share.CreatedAt,
 		})
 	}
 	photos := make([]any, 0, len(overview.Photos))
 	for _, photo := range overview.Photos {
 		photos = append(photos, map[string]any{
-			"owner": photo.Owner, "bytes": photo.Bytes, "status": photo.Status, "at": photo.At,
+			"owner": photo.Owner, "bytes": photo.Bytes, "stored": photo.Stored, "status": photo.Status, "at": photo.At,
 		})
 	}
 	events := make([]any, 0, len(overview.Events))
@@ -50,6 +50,7 @@ func (s *Server) adminOverview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"users": overview.Users, "devices": overview.Devices, "shares": overview.Shares,
 		"photosTransferred": overview.PhotosTransferred,
+		"storageBytes":      overview.StorageBytes,
 		"people":            people, "shareList": shares, "photos": photos, "events": events,
 		"updatedAt": time.Now().UTC(),
 	})

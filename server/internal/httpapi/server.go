@@ -137,6 +137,7 @@ func (s *Server) usage(w http.ResponseWriter, r *http.Request) {
 		"users":             snap.Users,
 		"devices":           snap.Devices,
 		"photosTransferred": snap.PhotosTransferred,
+		"storageBytes":      snap.StorageBytes,
 		"updatedAt":         time.Now().UTC(),
 		"activity":          activity,
 	})
