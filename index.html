@@ -19,6 +19,9 @@
       <img class="brand-logo" src="/favicon.svg" width="28" height="28" alt="" />
       <span>imgmesh</span>
     </a>
+    <nav class="site-nav" aria-label="站点">
+      <a href="/install/">安装使用</a>
+    </nav>
   </header>
 
   <main>
@@ -31,8 +34,8 @@
         <h1 id="hero-title">别再让照片过期消失</h1>
         <p class="lede">有人微信发来一堆旅行照，你没及时下载，过期就没了——永远找不回来。imgmesh 用加密链接分享：选照片、生成链接发出去；对方随时能在浏览器看，装了 App 还能直接存进相册。</p>
         <div class="cta-row">
-          <a class="btn btn-primary" href="#how">看看怎么用</a>
-          <span class="cta-note">先做 iOS，随后 Android、Windows、Mac</span>
+          <a class="btn btn-primary" href="/install/">安装和使用</a>
+          <a class="cta-note" href="#how">先看分享是怎么发生的</a>
         </div>
       </div>
       <div class="hero-visual" aria-hidden="true">
@@ -124,6 +127,30 @@
       </ol>
     </section>
 
+    <section class="section" id="install" aria-labelledby="install-title">
+      <h2 id="install-title">装到自己的 iPhone</h2>
+      <p class="section-lead">还没上架 App Store。用 Xcode 装到手机；对方不用装，浏览器打开链接就能看。</p>
+      <ol class="steps">
+        <li>
+          <strong>打开工程</strong>
+          <span>在 Mac 上克隆仓库，用 Xcode 16 打开 ios/Imgmesh.xcodeproj。签名团队选你的 Apple Developer 团队，Bundle ID 保持 com.imgmesh.app。</span>
+        </li>
+        <li>
+          <strong>运行到手机</strong>
+          <span>iPhone 系统要 iOS 17 或更新。连上 Mac 后点运行。第一次打开，到「设置 → 通用 → VPN 与设备管理」里信任开发者。</span>
+        </li>
+        <li>
+          <strong>登录并选照片</strong>
+          <span>用 Apple 登录，写个标题，点「选择照片」。出现链接后点「复制链接」。整段都要发出去，井号后面的 #k= 是密钥。</span>
+        </li>
+        <li>
+          <strong>对方打开、存进相册</strong>
+          <span>浏览器能直接看。装了 App 就把完整链接粘贴到「打开一份分享」，再点「保存到相册」。</span>
+        </li>
+      </ol>
+      <a class="btn btn-primary" href="/install/">完整步骤</a>
+    </section>
+
     <section class="section features" aria-labelledby="features-title">
       <h2 id="features-title">为什么放心发</h2>
       <p class="section-lead">隐私、可见性、差网上传，三件事一起做对。</p>
@@ -157,7 +184,7 @@
     <section class="section closing" aria-labelledby="closing-title">
       <h2 id="closing-title">过期不再是结局</h2>
       <p class="section-lead">群里只留链接，大图在加密分享里随时可看、可存——不用再怕「当时没下，后来没了」。</p>
-      <a class="btn btn-primary" href="#how">回到用法</a>
+      <a class="btn btn-primary" href="/install/">去安装</a>
     </section>
   </main>
 
@@ -168,6 +195,7 @@
         <span>imgmesh</span>
       </a>
     </p>
+    <p class="fine"><a href="/install/">安装和使用</a></p>
     <p class="fine">© <span id="y"></span> imgmesh.com</p>
   </footer>
 

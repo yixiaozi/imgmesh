@@ -51,9 +51,29 @@ a {
 .site-header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
   padding: 1.1rem 1.25rem;
   max-width: 72rem;
   margin: 0 auto;
+}
+
+.site-nav {
+  display: flex;
+  gap: 1rem;
+}
+
+.site-nav a {
+  color: var(--ink-soft);
+  font-size: 0.95rem;
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.site-nav a:hover,
+.site-nav a:focus-visible,
+.site-nav a[aria-current="page"] {
+  color: var(--ocean);
 }
 
 .brand {
@@ -175,6 +195,15 @@ a {
 .cta-note {
   color: var(--ink-soft);
   font-size: 0.88rem;
+}
+
+a.cta-note {
+  text-decoration: none;
+}
+
+a.cta-note:hover,
+a.cta-note:focus-visible {
+  color: var(--ocean);
 }
 
 .hero-visual {
@@ -478,8 +507,140 @@ a {
   margin-right: 0.55rem;
 }
 
-.closing .btn {
+.closing .btn,
+.section .btn {
   margin-top: 1.5rem;
+}
+
+.page {
+  max-width: var(--max);
+  margin: 0 auto;
+  padding: 0.4rem 1.25rem 4rem;
+}
+
+.page h1 {
+  margin: 0.4rem 0 1rem;
+  font-family: "Noto Serif SC", serif;
+  font-weight: 700;
+  font-size: clamp(1.85rem, 6vw, 2.4rem);
+  line-height: 1.25;
+  letter-spacing: -0.02em;
+}
+
+.page .lede {
+  max-width: none;
+  opacity: 1;
+  animation: none;
+}
+
+.guide + .guide {
+  margin-top: 2.4rem;
+  padding-top: 2rem;
+  border-top: 1px solid rgba(26, 35, 50, 0.08);
+}
+
+.guide h2 {
+  margin: 0;
+  font-family: "Noto Serif SC", serif;
+  font-weight: 700;
+  font-size: 1.35rem;
+  line-height: 1.35;
+}
+
+.guide p,
+.guide li {
+  color: var(--ink-soft);
+}
+
+.guide p {
+  margin: 0.8rem 0 0;
+}
+
+.procedure {
+  list-style: none;
+  margin: 1.15rem 0 0;
+  padding: 0;
+  counter-reset: step;
+  display: grid;
+  gap: 1rem;
+}
+
+.procedure li {
+  position: relative;
+  min-width: 0;
+  padding-left: 2.6rem;
+  counter-increment: step;
+}
+
+.procedure li::before {
+  content: counter(step);
+  position: absolute;
+  left: 0;
+  top: 0.12rem;
+  width: 1.8rem;
+  height: 1.8rem;
+  border-radius: 0.45rem;
+  background: var(--paper-deep);
+  color: var(--ocean-deep);
+  font-family: Outfit, system-ui, sans-serif;
+  font-weight: 600;
+  font-size: 0.95rem;
+  display: grid;
+  place-items: center;
+}
+
+.plain-list {
+  margin: 0.9rem 0 0;
+  padding-left: 1.15rem;
+}
+
+.plain-list li + li {
+  margin-top: 0.35rem;
+}
+
+.note {
+  margin: 1rem 0 0;
+  padding: 0.85rem 1rem;
+  background: rgba(184, 149, 108, 0.14);
+  border-left: 3px solid var(--sand);
+  color: var(--ink);
+}
+
+.guide p.note {
+  color: var(--ink);
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.86em;
+  background: rgba(14, 107, 110, 0.08);
+  padding: 0.08em 0.35em;
+  border-radius: 0.28rem;
+}
+
+pre {
+  margin: 0.85rem 0 0;
+  padding: 0.85rem 1rem;
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(14, 107, 110, 0.16);
+  border-radius: 0.6rem;
+}
+
+pre code {
+  background: none;
+  padding: 0;
+  font-size: 0.9rem;
+}
+
+@media (min-width: 860px) {
+  .page {
+    padding-left: 2rem;
+    padding-right: 2rem;
+  }
 }
 
 .site-footer {

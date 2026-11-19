@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="把 imgmesh 装到 iPhone，发出加密照片链接，并让对方在浏览器查看或存进相册。" />
+  <meta name="theme-color" content="#0e6b6e" />
+  <title>安装和使用 · imgmesh</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/favicon.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600&family=Noto+Serif+SC:wght@500;600;700&family=Outfit:wght@500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="/">
+      <img class="brand-logo" src="/favicon.svg" width="28" height="28" alt="" />
+      <span>imgmesh</span>
+    </a>
+    <nav class="site-nav" aria-label="站点">
+      <a href="/install/" aria-current="page">安装使用</a>
+    </nav>
+  </header>
+
+  <main class="page">
+    <h1>安装和使用</h1>
+    <p class="lede">App 还没上架。用 Xcode 装到自己的 iPhone 就能发照片。收到链接的人不用装 App，用浏览器就能看。</p>
+
+    <section class="guide" aria-labelledby="need-title">
+      <h2 id="need-title">先准备这些</h2>
+      <ul class="plain-list">
+        <li>一台 Mac，安装 Xcode 16。</li>
+        <li>一部 iPhone，系统为 iOS 17 或更新。用数据线连上 Mac，并在手机上点「信任」。</li>
+        <li>已加入 Apple Developer Program 的付费账号。Sign in with Apple 和从链接直接打开 App 都需要这个账号。</li>
+      </ul>
+    </section>
+
+    <section class="guide" aria-labelledby="build-title">
+      <h2 id="build-title">装到 iPhone</h2>
+      <ol class="procedure">
+        <li>在 Mac 上克隆仓库。
+          <pre><code>git clone https://github.com/yixiaozi/imgmesh.git</code></pre>
+        </li>
+        <li>双击打开 <code>ios/Imgmesh.xcodeproj</code>。</li>
+        <li>左侧点工程名 Imgmesh，选中 App 目标。打开 Signing &amp; Capabilities，勾选 Automatically manage signing，Team 选你的开发团队。Bundle Identifier 保持 <code>com.imgmesh.app</code>。</li>
+        <li>确认能力里有 Sign in with Apple，以及 Associated Domains 的 <code>applinks:imgmesh.com</code>。工程里已经写好；Xcode 要求登记 App ID 时，让它自动处理。</li>
+        <li>Xcode 顶部的运行设备选这台 iPhone，点运行。装好后打开 App。</li>
+        <li>如果 iPhone 提示开发者不受信任：打开「设置 → 通用 → VPN 与设备管理」，点你的开发者描述文件，再点信任。</li>
+      </ol>
+    </section>
+
+    <section class="guide" aria-labelledby="team-title">
+      <h2 id="team-title">让链接直接打开 App</h2>
+      <p>这一步做完之前，把完整链接粘贴进 App 也能打开。做完之后，在 iPhone 上点 <code>https://imgmesh.com/s/…</code> 会进入 imgmesh。</p>
+      <ol class="procedure">
+        <li>打开 <a href="https://developer.apple.com/account">developer.apple.com/account</a>，在 Membership details 里复制 Team ID。它是 10 位字符。</li>
+        <li>在服务器的 <code>/etc/imgmesh/api.env</code> 里写上这一行，把占位换成你的 Team ID。
+          <pre><code>APPLE_TEAM_ID=你的TeamID</code></pre>
+        </li>
+        <li>重启 API。
+          <pre><code>systemctl restart imgmesh-api</code></pre>
+        </li>
+        <li>打开 <a href="https://imgmesh.com/.well-known/apple-app-site-association">apple-app-site-association</a>。里面的 appIDs 应变成 <code>团队ID.com.imgmesh.app</code>。</li>
+        <li>如果手机上已经装过旧的 imgmesh，删掉再从 Xcode 装一次。</li>
+      </ol>
+      <p class="note">地址栏里 <code>#k=</code> 后面的一段是解密密钥。系统或微信有时会把它丢掉。丢掉之后，回到 App，把整段链接粘贴到「打开一份分享」。</p>
+    </section>
+
+    <section class="guide" aria-labelledby="send-title">
+      <h2 id="send-title">发出一组照片</h2>
+      <ol class="procedure">
+        <li>打开 imgmesh，点 Sign in with Apple。登录只用于发出和撤销。收到链接的人不用账号。</li>
+        <li>标题写成这组照片的名字，例如「三亚」。</li>
+        <li>点「选择照片」，可以多选。能发 JPEG、HEIC、PNG 和 WebP，单张不超过 50MB。选图用的是系统选择器，App 不会读取整个相册。</li>
+        <li>等加密和上传结束。页面上会出现链接，点「复制链接」，或点「发出链接」交给系统分享。</li>
+        <li>把整段链接发给对方。自己先打开一次，确认地址里还有 <code>#k=</code>。</li>
+      </ol>
+    </section>
+
+    <section class="guide" aria-labelledby="receive-title">
+      <h2 id="receive-title">对方查看和保存</h2>
+      <p>对方用手机或电脑的浏览器打开完整链接，就能逐张看、下载单张，或打包下载。HEIC 在浏览器里可能只有下载，原图仍在。</p>
+      <p>对方也装了 App 时：</p>
+      <ol class="procedure">
+        <li>在「打开一份分享」里粘贴完整链接，点「打开」。配好 Team ID 之后，直接点链接也会进来。</li>
+        <li>照片出现后，点「保存到相册」。第一次会请求「添加照片」权限，用来写入新照片。</li>
+        <li>保存进去的是解密后的原图，之后在系统相册里查看。</li>
+      </ol>
+    </section>
+
+    <section class="guide" aria-labelledby="after-title">
+      <h2 id="after-title">移除、撤销，以及谁打开过</h2>
+      <ul class="plain-list">
+        <li>「从 imgmesh 移除」把这组照片从这台手机的 imgmesh 列表拿掉，并记一条移除记录。系统相册里已经保存的照片留在原地，服务器上的文件也还在。</li>
+        <li>「撤销链接」只有发送者能点。撤销后链接失效，服务器上的密文被删除。对方相册里已经保存的副本还在。</li>
+        <li>发送者打开自己发出的分享，可以在「谁打开过」里看到打开、存进相册和从 imgmesh 移除。</li>
+      </ul>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <p>
+      <a class="brand" href="/">
+        <img class="brand-logo" src="/favicon.svg" width="22" height="22" alt="" />
+        <span>imgmesh</span>
+      </a>
+    </p>
+    <p class="fine"><a href="/">回到首页</a></p>
+    <p class="fine">© <span id="y"></span> imgmesh.com</p>
+  </footer>
+  <script>
+    document.getElementById("y").textContent = new Date().getFullYear();
+  </script>
+</body>
+</html>

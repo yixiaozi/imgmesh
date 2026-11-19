@@ -51,6 +51,7 @@ jobs:
         run: |
           SSH="ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new"
           rsync -avz -e "$SSH" index.html styles.css favicon.svg "${SSH_USER}@${SSH_HOST}:/var/www/imgmesh/"
+          rsync -avz -e "$SSH" install/ "${SSH_USER}@${SSH_HOST}:/var/www/imgmesh/install/"
           rsync -avz --delete -e "$SSH" web/dist/ "${SSH_USER}@${SSH_HOST}:/var/www/imgmesh/s/"
           scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
             imgmesh-api \
