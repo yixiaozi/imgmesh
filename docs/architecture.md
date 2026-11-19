@@ -15,7 +15,7 @@ imgmesh 用来分享旅行照片。发送者在 App 里选多张照片，在本�
 - 浏览器随时能看；装了 App 可存进系统相册
 - 能看到谁打开过、谁存过、谁在 imgmesh 里移除过这份分享
 - 网络差时也能传完；点对点是加速，不是唯一通道
-- 平台顺序：iOS，然后 Android，再 Windows、Mac
+- 平台：iOS，以及同一套 Windows / Mac 客户端。Android 随后
 
 ## 第一版边界
 
@@ -26,14 +26,14 @@ imgmesh 用来分享旅行照片。发送者在 App 里选多张照片，在本�
 - 拿着完整链接并已登记名称的人，都可以往这条链接里追加照片。链接和密钥不变。追加的人不能撤销链接，也不能替换别人已经上传的对象。创建者仍然可以撤销整条链接。
 - 查看、下载和存相册都要先登记。服务器按注册用户记账，不采用客户端临时填写的名字。
 - 创建和撤销要求已经登记的用户。iOS 应用在发出前仍会要求 Sign in with Apple。Windows 和 Mac 没有 Apple 登录，登记名称后就可以发出和撤销。安卓没有 Apple 登录，打开和保存可以用，发出仍会提示先登录 Apple。
-- 「删除」只指 imgmesh 里的这份分享。存进系统相册之后，系统不提供可靠的删除回执。记录分三类：`view`（查看）、`download`（下载文件）、`save`（写入 iPhone 相册，并留在「在这些手机里」）。`remove` 表示从 imgmesh 收件箱移除，不把手机从「在这些手机里」拿掉。
-- 旧的 `open` 与 `view` 都算查看。浏览器上报的 `save` 记成下载。
+- 「删除」只指 imgmesh 里的这份分享。存进系统相册或电脑文件夹之后，系统不提供可靠的删除回执。记录分三类：`view`（查看）、`download`（下载文件）、`save`（写入 iPhone 相册或电脑文件夹，并留在「在这些手机里」）。`remove` 表示从 imgmesh 收件箱移除，不把已经保存的副本从记录里拿掉。
+- 旧的 `open` 与 `view` 都算查看。浏览器上报的 `save` 记成下载。电脑上报的 `save` 仍是保存。
 - 第一版只收图片：`image/jpeg`、`image/heic`、`image/heif`、`image/png`、`image/webp`。
 - 单张明文上限 52,428,800 字节（50 MiB）。单次分享最多 200 张原图，原图明文合计最多 2,147,483,648 字节（2 GiB）。
 - 每名发送者的配额先按 5,368,709,120 字节（5 GiB）配置。
 - 原图字节原样加密，上传前不转码，服务器也不转码。浏览器能解码的直接显示。HEIC / HEIF 在拿到明文之后用浏览器里的 wasm 解码，解不了或原图过大时保留文件名并提供下载。
 - 缩略图是长边 480 像素的 JPEG，质量 0.70，保持比例，不放大小图。缩略图单独加密，图库先拉缩略图。
-- 视频、Android、Windows、Mac、点对点传输，都不在第一版。
+- 视频和点对点传输不在第一版。Windows 和 Mac 共用 `desktop/` 里的 Electron 客户端，改一处界面或加密代码，再在对应系统上打包。
 - 对象放 Cloudflare R2。API 和网页仍放现有 VPS。本地开发用 MinIO，接口与 R2 同为 S3。若改在 VPS 上跑 MinIO，要单独守磁盘水位。
 - 撤销分享会删除 R2 上的对象并记下撤销时间。已经存进对方系统相册的副本留在对方设备上。
 
@@ -187,7 +187,7 @@ PostgreSQL。标识列存原始字节或存 base64url 均可，但全库只选�
   - `share_id` + `user_id`
   - `device_id`
   - `client`
-  - `saved_at`：iPhone 存入相册的时间。从 imgmesh 移除不会删除这条，因为系统相册里的照片还在
+  - `saved_at`：iPhone 存入相册，或电脑存进文件夹的时间。从 imgmesh 移除不会删除这条，因为那份副本还在
 - `follows`
   - `share_id` + `user_id`
   - `created_at`：这个人选择了自动接收以后新增的照片。再打开同一条链接时，客户端只下载还没保存过的新照片
@@ -265,6 +265,12 @@ Vite + TypeScript，解密使用 WebCrypto。Nginx 把 `/s/*` 指到这个 SPA�
 
 与发送端同一个 App。Universal Link 打开 `https://imgmesh.com/s/…`，片段里的密钥一并交给 App。解密后以「仅添加」权限写入系统相册，写入成功才上报 `save`。用户在 App 内移除这份分享时上报 `remove`。选择「保存到相册」或打开「自动保存新增照片」之后，再打开同一条链接会把后来加上的照片写入相册。
 
+### Windows 与 Mac
+
+`desktop/` 是一份 Electron 应用。界面、加密和上传都写在同一套 TypeScript 里，加密函数来自 `web/src/crypto.ts`。`npm run dist` 按当前系统调用 electron-builder：在 Mac 上生成 dmg 和 zip，在 Windows 上生成 nsis 安装包和 zip。不需要为两个系统各写一份客户端。推送 `v*` 标签后，`.github/workflows/release-desktop.yml` 用这份代码在 Mac 和 Windows 上生成安装包，并挂到该标签的 GitHub Release。安装包版本号取自标签。
+
+电脑上选 JPEG、PNG、WebP 或 HEIC，本地加密后上传，发出带 `#k=` 的链接。打开链接后是照片网格和身份证。保存时选择一个文件夹，写入解密后的原图，并记一条 `save`。密钥只留在本机的分享列表里。
+
 ## 仓库与部署
 
 营销站留在仓库根目录。后续代码按目录加入：
@@ -272,6 +278,7 @@ Vite + TypeScript，解密使用 WebCrypto。Nginx 把 `/s/*` 指到这个 SPA�
 - `server/`：Go API。路由用 chi，数据库用 pgx，对象存储用 aws-sdk-go-v2。启动时按版本执行 `internal/store/migrations` 里的 SQL
 - `web/`：查看器
 - `ios/`：Xcode 工程
+- `desktop/`：Windows 和 Mac 共用的 Electron 客户端
 - `docs/architecture.md`：本文
 - `deploy/`：在现有 Nginx 站点上增加 `/v1/` 反代和 `/s/` 查看器；API 用 systemd 常驻。其余路径仍是营销站
 
@@ -284,4 +291,4 @@ GitHub Actions 在现有营销站 rsync 之外，再发布 API 二进制和 `web
 3. 账号、撤销和事件：Sign in with Apple、分享列表、过期、撤销、`open` / `save` / `remove`。iOS 接收端存入相册。
 4. 传完的可靠性：缩略图优先、multipart 续传、HEIC 的 wasm 解码、通用链接预览卡片。
 5. 点对点加速：两端在线时用 WebRTC 传密文，信令只走 API；任一端不在线则读取 R2。
-6. Android，然后桌面。加密、清单和 API 保持不变，替换系统相册和后台传输。
+6. Android，然后桌面。桌面端是 `desktop/` 这一份 Electron 客户端，Windows 和 Mac 都由它打包。加密、清单和 API 保持不变。

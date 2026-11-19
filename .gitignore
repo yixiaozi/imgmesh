@@ -1,5 +1,7 @@
 node_modules/
 web/dist/
+desktop/dist/
+desktop/release/
 server/imgmesh-api
 .DS_Store
 *.xcuserstate
