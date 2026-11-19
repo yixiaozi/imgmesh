@@ -20,7 +20,7 @@
 
 App ID 需要打开 Sign in with Apple 和 Associated Domains。服务器上的 `/etc/imgmesh/api.env` 把 `APPLE_TEAM_ID` 写成团队 ID 后重启 `imgmesh-api`，通用链接才会从 `https://imgmesh.com/s/…` 直接打开 App。没配对之前，把完整链接粘贴进 App 也能打开并保存。
 
-登录只用于发出和撤销。收到链接的人不用账号，就可以解密并写入相册。
+每台设备先登记一个不重复的名称。Apple 登录只用于发出和撤销。收到链接的人也要登记，查看、下载和保存才会记在这个名称下。照片网格里可以打开每张照片的身份证；资料里的介绍、城市和联系方式可以用来找到对方。
 
 ## 服务器
 

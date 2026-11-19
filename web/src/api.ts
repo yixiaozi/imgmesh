@@ -4,13 +4,46 @@ export interface ShareMeta {
   totalBytes: number;
   revoked: boolean;
   expired: boolean;
+  owner?: PublicUser;
 }
 
 export interface AccountUser {
   id: string;
   displayName: string;
+  bio?: string;
+  city?: string;
+  contact?: string;
   appleLinked: boolean;
   deviceId: string;
+}
+
+export interface PublicUser {
+  id: string;
+  displayName: string;
+  bio: string;
+  city: string;
+  contact: string;
+  sharedCount: number;
+  savedCount: number;
+}
+
+export interface NamedUser {
+  id: string;
+  displayName: string;
+  city?: string;
+}
+
+export interface PhotoHolder extends NamedUser {
+  shared?: boolean;
+  saved?: boolean;
+  from?: NamedUser;
+}
+
+export interface PhotoCard {
+  id: string;
+  sharedBy: NamedUser[];
+  holders: PhotoHolder[];
+  savers: PhotoHolder[];
 }
 
 export interface Account {
@@ -96,17 +129,44 @@ export async function resume(): Promise<Account | null> {
   return account;
 }
 
-export async function rename(token: string, displayName: string): Promise<AccountUser> {
+export async function saveProfile(
+  token: string,
+  fields: { displayName?: string; bio?: string; city?: string; contact?: string },
+): Promise<AccountUser> {
   const res = await fetch("/v1/me", {
     method: "PATCH",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ displayName }),
+    body: JSON.stringify(fields),
   });
   if (!res.ok) throw new Error(await readError(res));
   const body = (await res.json()) as { user: AccountUser };
   const current = loadAccount();
   if (current) saveAccount({ ...current, user: body.user });
   return body.user;
+}
+
+export async function searchUsers(token: string, query: string): Promise<PublicUser[]> {
+  const res = await fetch(`/v1/users?q=${encodeURIComponent(query)}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(await readError(res));
+  const body = (await res.json()) as { users: PublicUser[] };
+  return body.users;
+}
+
+export async function loadUser(token: string, id: string): Promise<PublicUser> {
+  const res = await fetch(`/v1/users/${id}`, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error(await readError(res));
+  const body = (await res.json()) as { user: PublicUser };
+  return body.user;
+}
+
+export async function photoCards(token: string, ids: string[]): Promise<PhotoCard[]> {
+  const query = ids.map((id) => `id=${encodeURIComponent(id)}`).join("&");
+  const res = await fetch(`/v1/photos?${query}`, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error(await readError(res));
+  const body = (await res.json()) as { photos: PhotoCard[] };
+  return body.photos;
 }
 
 export class Api {
@@ -139,6 +199,15 @@ export class Api {
     const res = await this.send(`/v1/shares/${this.shareId}/objects/${id}`);
     const body = (await res.json()) as { url: string };
     return body.url;
+  }
+
+  async claim(items: { sha256: string; kind: "shared" | "saved" }[]): Promise<void> {
+    if (!items.length) return;
+    await this.send(`/v1/shares/${this.shareId}/photos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items }),
+    });
   }
 
   async event(kind: "view" | "download" | "save" | "remove"): Promise<void> {

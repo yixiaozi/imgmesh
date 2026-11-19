@@ -22,9 +22,11 @@ struct RootView: View {
                             .disabled(model.draftName.trimmingCharacters(in: .whitespaces).isEmpty)
                     } else {
                         Text(model.session?.displayName ?? "")
-                        TextField("改成新名称", text: $model.draftName)
-                        Button("保存名称") { Task { await model.rename(to: model.draftName) } }
-                            .disabled(model.draftName.trimmingCharacters(in: .whitespaces).isEmpty)
+                        TextField("名称", text: $model.draftName)
+                        TextField("介绍", text: $model.bio)
+                        TextField("城市", text: $model.city)
+                        TextField("联系方式", text: $model.contact)
+                        Button("保存资料") { Task { await model.saveProfile() } }
                         if model.session?.appleLinked == true {
                             Text("已连接 Apple，可以分享和撤销。")
                                 .font(.footnote)
@@ -40,6 +42,24 @@ struct RootView: View {
                             .frame(height: 44)
                             .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 8, trailing: 0))
                             Text("分享和撤销需要 Apple 登录。查看和保存只用上面的名称。")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                Section("找人") {
+                    TextField("名称、城市或联系方式", text: $model.peopleQuery)
+                    Button("查找") { Task { await model.findPeople() } }
+                        .disabled(model.session == nil || model.peopleQuery.trimmingCharacters(in: .whitespaces).isEmpty)
+                    ForEach(model.people) { person in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(person.displayName)
+                            Text("\(person.city.isEmpty ? "未填城市" : person.city) · \(person.contact.isEmpty ? "未填联系方式" : person.contact)")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                            Text(person.bio.isEmpty ? "还没有介绍" : person.bio)
+                                .font(.footnote)
+                            Text("分享了 \(person.sharedCount) 张，保存了 \(person.savedCount) 张")
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                         }
@@ -118,6 +138,7 @@ struct RootView: View {
 struct GalleryView: View {
     @EnvironmentObject private var model: AppModel
     let share: LocalShare
+    @State private var openID: String?
 
     var body: some View {
         List {
@@ -127,7 +148,12 @@ struct GalleryView: View {
                 } else {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 8)], spacing: 8) {
                         ForEach(model.gallery) { photo in
-                            photoCell(photo)
+                            Button {
+                                openID = photo.id
+                            } label: {
+                                photoCell(photo)
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
                     .padding(.vertical, 4)
@@ -149,19 +175,41 @@ struct GalleryView: View {
         }
         .navigationTitle(share.title)
         .task { await model.loadGallery(share) }
+        .sheet(isPresented: Binding(get: { openID != nil }, set: { if !$0 { openID = nil } })) {
+            if let openID, let photo = model.gallery.first(where: { $0.id == openID }) {
+                PhotoBrowser(photo: photo, share: share)
+            }
+        }
     }
 
     @ViewBuilder
     private func photoCell(_ photo: AppModel.GalleryPhoto) -> some View {
-        if let preview = photo.preview, let image = UIImage(data: preview) {
-            Image(uiImage: image).resizable().scaledToFill().frame(height: 96).clipped().cornerRadius(8)
-        } else {
-            ZStack {
-                RoundedRectangle(cornerRadius: 8).fill(Color(red: 0.90, green: 0.93, blue: 0.92))
-                Text(photo.mime == "image/heic" ? "HEIC" : "照片").font(.caption)
+        ZStack(alignment: .bottomLeading) {
+            if let preview = photo.preview, let image = UIImage(data: preview) {
+                Image(uiImage: image).resizable().scaledToFill().frame(height: 110).clipped()
+            } else {
+                ZStack {
+                    Rectangle().fill(Color(red: 0.90, green: 0.93, blue: 0.92))
+                    Text(photo.mime == "image/heic" ? "HEIC" : "照片").font(.caption)
+                }
+                .frame(height: 110)
             }
-            .frame(height: 96)
+            Text(tileLabel(photo))
+                .font(.caption2)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color(red: 0.05, green: 0.42, blue: 0.43), in: Capsule())
+                .foregroundStyle(.white)
+                .padding(6)
         }
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func tileLabel(_ photo: AppModel.GalleryPhoto) -> String {
+        guard let sha = photo.item.sha256, let card = model.cards[sha] else { return "照片" }
+        let count = card.holders.count
+        if !card.sharedBy.isEmpty { return count > 0 ? "已分享 · \(count) 人有" : "已分享" }
+        return count > 0 ? "\(count) 人有" : "未分享"
     }
 
     @ViewBuilder
@@ -191,4 +239,126 @@ struct GalleryView: View {
         }
         return place
     }
+}
+
+struct PhotoBrowser: View {
+    @EnvironmentObject private var model: AppModel
+    let photo: AppModel.GalleryPhoto
+    let share: LocalShare
+    @State private var index = 0
+
+    private var current: AppModel.GalleryPhoto {
+        model.gallery.indices.contains(index) ? model.gallery[index] : photo
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                if let preview = current.preview, let image = UIImage(data: preview) {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxHeight: 360)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .padding(.horizontal)
+                }
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(Array(model.gallery.enumerated()), id: \.element.id) { offset, item in
+                            Button {
+                                index = offset
+                            } label: {
+                                thumb(item)
+                                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(offset == index ? Color(red: 0.05, green: 0.42, blue: 0.43) : .clear, lineWidth: 2))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal)
+                }
+                identity(current)
+                    .padding()
+                HStack {
+                    Button("上一张") { move(-1) }
+                    Button("下一张") { move(1) }
+                    Button("保存到相册") { Task { await model.saveGallery(share) } }
+                }
+                .padding(.bottom)
+            }
+            .navigationTitle(current.item.sha256.map(shortID) ?? "照片")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+        .onAppear {
+            index = model.gallery.firstIndex(where: { $0.id == photo.id }) ?? 0
+        }
+    }
+
+    private func move(_ delta: Int) {
+        let count = model.gallery.count
+        guard count > 0 else { return }
+        index = (index + delta + count) % count
+    }
+
+    @ViewBuilder
+    private func thumb(_ item: AppModel.GalleryPhoto) -> some View {
+        if let preview = item.preview, let image = UIImage(data: preview) {
+            Image(uiImage: image).resizable().scaledToFill().frame(width: 64, height: 64).clipped().clipShape(RoundedRectangle(cornerRadius: 6))
+        } else {
+            RoundedRectangle(cornerRadius: 6).fill(Color(red: 0.90, green: 0.93, blue: 0.92)).frame(width: 64, height: 64)
+        }
+    }
+
+    @ViewBuilder
+    private func identity(_ item: AppModel.GalleryPhoto) -> some View {
+        let card = item.item.sha256.flatMap { model.cards[$0] }
+        VStack(alignment: .leading, spacing: 8) {
+            Text("身份证").font(.title2)
+            if let sha = item.item.sha256 {
+                Text(shortID(sha)).font(.title3)
+                Text(sha).font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
+            } else {
+                Text("保存到相册后会生成身份证。").foregroundStyle(.secondary)
+            }
+            if let card {
+                Text(card.sharedBy.isEmpty ? "还没分享" : "已分享")
+                Text("谁分享了").font(.headline)
+                Text(card.sharedBy.isEmpty ? "还没有人分享。" : card.sharedBy.map(\.displayName).joined(separator: "、"))
+                Text("谁有这张").font(.headline)
+                ForEach(card.holders) { holder in
+                    Text(holderLine(holder))
+                }
+                Text("谁保存了").font(.headline)
+                if card.savers.isEmpty {
+                    Text("还没有人保存。").foregroundStyle(.secondary)
+                }
+                ForEach(card.savers) { saver in
+                    Text(saverLine(saver))
+                }
+            } else {
+                Text("这张照片还没有身份证记录。").foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func holderLine(_ holder: APIClient.PhotoHolder) -> String {
+        let action = holder.saved == true ? "保存了" : "分享了"
+        if holder.saved == true, let from = holder.from, from.id != holder.id {
+            return "\(holder.displayName) \(action)，保存自 \(from.displayName)"
+        }
+        return "\(holder.displayName) \(action)"
+    }
+
+    private func saverLine(_ saver: APIClient.PhotoHolder) -> String {
+        if let from = saver.from, from.id != saver.id {
+            return "\(saver.displayName)，保存自 \(from.displayName)"
+        }
+        return "\(saver.displayName)，自己留下的"
+    }
+}
+
+private func shortID(_ id: String) -> String {
+    let head = id.prefix(8)
+    let split = head.index(head.startIndex, offsetBy: min(4, head.count))
+    return "IM-\(head[..<split]) \(head[split...])"
 }

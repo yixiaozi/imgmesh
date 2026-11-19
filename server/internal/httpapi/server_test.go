@@ -3,10 +3,12 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -422,6 +424,132 @@ func TestRegisterOnceAndActivity(t *testing.T) {
 	if !bytes.Contains(recorded, []byte(`"phones"`)) || !bytes.Contains(recorded, []byte(`"downloaded"`)) || !bytes.Contains(recorded, []byte(`"viewed"`)) {
 		t.Fatalf("activity lists missing: %s", recorded)
 	}
+}
+
+func TestPhotoIdentityAndPeople(t *testing.T) {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		dsn = "postgres:///imgmesh_test?host=/var/run/postgresql"
+	}
+	ctx := context.Background()
+	st, err := store.Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(st.Close)
+	if err := st.Reset(ctx); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	disk, err := blob.NewDisk(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := "http://" + ln.Addr().String()
+	api := &Server{
+		Store: st, Disk: disk, Secret: bytes.Repeat([]byte{7}, 32), PublicBaseURL: base,
+		Apple: fakeApple{"good-token": "sub-photo"}, MultipartThreshold: 32, PartSize: 16, DiskFreeMin: 1,
+	}
+	srv := &http.Server{Handler: api.Handler()}
+	go srv.Serve(ln)
+	t.Cleanup(func() { srv.Close() })
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	sender := auth(t, client, base)
+	res := do(t, client, http.MethodPost, base+"/v1/register", "", "", map[string]string{
+		"deviceId": "photocard-device01", "displayName": "阿宁", "platform": "ios",
+	})
+	if res.StatusCode != 201 {
+		t.Fatalf("register %d %s", res.StatusCode, readBody(res))
+	}
+	var viewer struct {
+		Token string `json:"token"`
+		User  struct {
+			ID string `json:"id"`
+		} `json:"user"`
+	}
+	json.NewDecoder(res.Body).Decode(&viewer)
+	res.Body.Close()
+
+	res = do(t, client, http.MethodPatch, base+"/v1/me", viewer.Token, "", map[string]string{
+		"bio": "喜欢把海边的照片留下来", "city": "昆明", "contact": "阿宁",
+	})
+	if res.StatusCode != 200 || !bytes.Contains(readBody(res), []byte("昆明")) {
+		t.Fatalf("profile patch failed")
+	}
+
+	res = do(t, client, http.MethodGet, base+"/v1/users?q="+url.QueryEscape("昆明"), viewer.Token, "", nil)
+	found := readBody(res)
+	if res.StatusCode != 200 || !bytes.Contains(found, []byte("阿宁")) {
+		t.Fatalf("search %d %s", res.StatusCode, found)
+	}
+
+	master := bytes.Repeat([]byte{0x31}, 32)
+	shareID := bytes.Repeat([]byte{0x32}, 16)
+	access, err := seal.AccessTag(master, shareID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shareText := id.Encode(shareID)
+	accessText := id.Encode(access)
+	res = do(t, client, http.MethodPost, base+"/v1/shares", sender, "", map[string]any{
+		"id": shareText, "accessTag": accessText,
+	})
+	if res.StatusCode != 200 {
+		t.Fatalf("share %d %s", res.StatusCode, readBody(res))
+	}
+	res.Body.Close()
+
+	res = do(t, client, http.MethodGet, base+"/v1/shares/"+shareText, sender, accessText, nil)
+	meta := readBody(res)
+	if !bytes.Contains(meta, []byte("发送者")) {
+		t.Fatalf("share owner missing: %s", meta)
+	}
+
+	one := fingerprint("one")
+	two := fingerprint("two")
+	res = do(t, client, http.MethodPost, base+"/v1/shares/"+shareText+"/photos", sender, accessText, map[string]any{
+		"items": []map[string]string{{"sha256": one, "kind": "shared"}, {"sha256": two, "kind": "shared"}},
+	})
+	if res.StatusCode != 204 {
+		t.Fatalf("owner claim %d %s", res.StatusCode, readBody(res))
+	}
+	res = do(t, client, http.MethodPost, base+"/v1/shares/"+shareText+"/photos", viewer.Token, accessText, map[string]any{
+		"items": []map[string]string{{"sha256": one, "kind": "shared"}},
+	})
+	if res.StatusCode != 403 {
+		t.Fatalf("non-owner share claim %d", res.StatusCode)
+	}
+	res.Body.Close()
+	res = do(t, client, http.MethodPost, base+"/v1/shares/"+shareText+"/photos", viewer.Token, accessText, map[string]any{
+		"items": []map[string]string{{"sha256": one, "kind": "saved"}},
+	})
+	if res.StatusCode != 204 {
+		t.Fatalf("save claim %d %s", res.StatusCode, readBody(res))
+	}
+
+	res = do(t, client, http.MethodGet, base+"/v1/photos?id="+one+"&id="+two, viewer.Token, "", nil)
+	body := readBody(res)
+	if res.StatusCode != 200 || !bytes.Contains(body, []byte("阿宁")) || !bytes.Contains(body, []byte("发送者")) {
+		t.Fatalf("cards %d %s", res.StatusCode, body)
+	}
+	if !bytes.Contains(body, []byte(`"savers"`)) || !bytes.Contains(body, []byte(`"sharedBy"`)) {
+		t.Fatalf("card lists missing: %s", body)
+	}
+	res = do(t, client, http.MethodGet, base+"/v1/users/"+viewer.User.ID, sender, "", nil)
+	profile := readBody(res)
+	if res.StatusCode != 200 || !bytes.Contains(profile, []byte(`"savedCount":1`)) {
+		t.Fatalf("public profile %d %s", res.StatusCode, profile)
+	}
+}
+
+func fingerprint(plain string) string {
+	sum := sha256.Sum256([]byte(plain))
+	return id.Encode(sum[:])
 }
 
 func auth(t *testing.T, client *http.Client, base string) string {

@@ -55,12 +55,18 @@ export async function decrypt(
   return new Uint8Array(plain);
 }
 
+export async function sha256(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bytes as BufferSource);
+  return encode(new Uint8Array(digest));
+}
+
 export interface ManifestItem {
   id: string;
   name?: string;
   mime: string;
   bytes: number;
   nonce: string;
+  sha256?: string;
   thumb?: { id: string; bytes: number; nonce: string };
 }
 

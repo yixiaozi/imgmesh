@@ -13,6 +13,12 @@ final class AppModel: ObservableObject {
     @Published var gallery: [GalleryPhoto] = []
     @Published var activity = APIClient.ShareActivity(viewed: [], downloaded: [], phones: [])
     @Published var draftName = ""
+    @Published var bio = ""
+    @Published var city = ""
+    @Published var contact = ""
+    @Published var peopleQuery = ""
+    @Published var people: [APIClient.PublicUser] = []
+    @Published var cards: [String: APIClient.PhotoCard] = [:]
 
     let api = APIClient()
     private var deviceID = KeychainStore.deviceID()
@@ -63,13 +69,34 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func rename(to name: String) async {
+    func saveProfile() async {
         guard let token = session?.token else { return }
+        let name = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayName = name.isEmpty ? (session?.displayName ?? "") : name
         do {
-            let user = try await api.rename(token: token, displayName: name)
+            let user = try await api.saveProfile(token: token, displayName: displayName, bio: bio, city: city, contact: contact)
             session?.displayName = user.displayName
+            bio = user.bio ?? ""
+            city = user.city ?? ""
+            contact = user.contact ?? ""
             if let session { KeychainStore.saveSession(session) }
-            status = "名称已改为 \(user.displayName)。"
+            status = "资料已保存。别人可以用名称、城市或联系方式找到你。"
+            errorMessage = ""
+        } catch {
+            errorMessage = apiMessage(error)
+        }
+    }
+
+    func findPeople() async {
+        guard let token = session?.token else { return }
+        let query = peopleQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else {
+            people = []
+            return
+        }
+        do {
+            people = try await api.searchUsers(token: token, query: query)
+            if people.isEmpty { status = "没有找到这个人。" }
             errorMessage = ""
         } catch {
             errorMessage = apiMessage(error)
@@ -104,6 +131,9 @@ final class AppModel: ObservableObject {
             deviceID: account.user.deviceId.isEmpty ? deviceID : account.user.deviceId
         )
         session = stored
+        bio = account.user.bio ?? ""
+        city = account.user.city ?? ""
+        contact = account.user.contact ?? ""
         KeychainStore.saveSession(stored)
     }
 
@@ -172,6 +202,7 @@ final class AppModel: ObservableObject {
                     mime: photo.mime,
                     bytes: photo.data.count,
                     nonce: ImgmeshSeal.encode(nonce),
+                    sha256: ImgmeshSeal.fingerprint(photo.data),
                     thumb: thumb
                 ))
             }
@@ -230,6 +261,11 @@ final class AppModel: ObservableObject {
                 manifestID: manifestText,
                 nonce: ImgmeshSeal.encode(manifestNonce)
             )
+            let claims = items.compactMap { item -> [String: String]? in
+                guard let sha = item.sha256 else { return nil }
+                return ["sha256": sha, "kind": "shared"]
+            }
+            try? await api.claim(token: session.token, shareID: shareIDText, access: tag, items: claims)
             let local = LocalShare(
                 id: shareIDText,
                 masterKey: masterText,
@@ -319,6 +355,7 @@ final class AppModel: ObservableObject {
             if share.role == "sent" {
                 activity = (try? await api.activity(token: token, shareID: share.id)) ?? activity
             }
+            await loadCards(token: token, photos: photos)
         } catch {
             status = ""
             errorMessage = apiMessage(error)
@@ -334,10 +371,18 @@ final class AppModel: ObservableObject {
             let shareID = try ImgmeshSeal.decode(share.id)
             let master = try ImgmeshSeal.decode(share.masterKey)
             let access = ImgmeshSeal.encode(try ImgmeshSeal.accessTag(master: master, shareID: shareID))
+            var claims: [[String: String]] = []
+            for index in images.indices {
+                let sha = gallery[index].item.sha256?.isEmpty == false ? gallery[index].item.sha256! : ImgmeshSeal.fingerprint(images[index])
+                gallery[index].item.sha256 = sha
+                claims.append(["sha256": sha, "kind": "saved"])
+            }
             if let token = session?.token {
                 try? await api.record(token: token, shareID: share.id, access: access, kind: "save")
+                try? await api.claim(token: token, shareID: share.id, access: access, items: claims)
+                await loadCards(token: token, photos: gallery)
             }
-            status = "已经存进相册。"
+            status = "已经存进相册，并写进每张照片的身份证。"
             errorMessage = ""
         } catch {
             errorMessage = apiMessage(error)
@@ -368,6 +413,15 @@ final class AppModel: ObservableObject {
         } catch {
             errorMessage = apiMessage(error)
         }
+    }
+
+    private func loadCards(token: String, photos: [GalleryPhoto]) async {
+        let ids = Array(Set(photos.compactMap(\.item.sha256).filter { !$0.isEmpty }))
+        guard !ids.isEmpty else { return }
+        guard let list = try? await api.photoCards(token: token, ids: ids) else { return }
+        var next: [String: APIClient.PhotoCard] = [:]
+        for card in list { next[card.id] = card }
+        cards = next
     }
 
     private func originals(_ share: LocalShare) async throws -> [Data] {

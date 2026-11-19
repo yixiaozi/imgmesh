@@ -12,6 +12,7 @@ import (
 	"unicode"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"github.com/yixiaozi/imgmesh/server/internal/blob"
 	"github.com/yixiaozi/imgmesh/server/internal/id"
 	"github.com/yixiaozi/imgmesh/server/internal/store"
@@ -71,7 +72,10 @@ func (s *Server) Handler() http.Handler {
 		r.Group(func(r chi.Router) {
 			r.Use(s.withUser)
 			r.Get("/me", s.me)
-			r.Patch("/me", s.rename)
+			r.Patch("/me", s.patchMe)
+			r.Get("/users", s.searchUsers)
+			r.Get("/users/{id}", s.publicUser)
+			r.Get("/photos", s.photoCards)
 			r.Post("/shares", s.createShare)
 			r.Get("/me/shares", s.listMine)
 			r.Post("/shares/{id}/uploads", s.uploads)
@@ -82,6 +86,7 @@ func (s *Server) Handler() http.Handler {
 		r.Group(func(r chi.Router) {
 			r.Use(s.withAccess)
 			r.Get("/shares/{id}", s.getShare)
+			r.Post("/shares/{id}/photos", s.claimPhotos)
 			r.Get("/shares/{id}/manifest", s.manifest)
 			r.Get("/shares/{id}/objects/{oid}", s.objectURL)
 			r.Post("/shares/{id}/events", s.addEvent)
@@ -176,23 +181,155 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	s.writeProfile(w, r, userID(r))
 }
 
-func (s *Server) rename(w http.ResponseWriter, r *http.Request) {
+func (s *Server) patchMe(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		DisplayName string `json:"displayName"`
+		DisplayName *string `json:"displayName"`
+		Bio         *string `json:"bio"`
+		City        *string `json:"city"`
+		Contact     *string `json:"contact"`
 	}
 	if !readJSON(w, r, &body) {
 		return
 	}
-	name, ok := normalizeName(body.DisplayName)
+	if body.DisplayName != nil {
+		name, ok := normalizeName(*body.DisplayName)
+		if !ok {
+			writeJSON(w, http.StatusBadRequest, errBody{"bad_request"})
+			return
+		}
+		if err := s.Store.Rename(r.Context(), userID(r), name); err != nil {
+			writeStoreErr(w, err)
+			return
+		}
+	}
+	if body.Bio != nil || body.City != nil || body.Contact != nil {
+		current, err := s.Store.Profile(r.Context(), userID(r))
+		if err != nil {
+			writeStoreErr(w, err)
+			return
+		}
+		bio, city, contact := current.Bio, current.City, current.Contact
+		if body.Bio != nil {
+			bio, err = normalizeDetail(*body.Bio, 80)
+		}
+		if err == nil && body.City != nil {
+			city, err = normalizeDetail(*body.City, 24)
+		}
+		if err == nil && body.Contact != nil {
+			contact, err = normalizeDetail(*body.Contact, 40)
+		}
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, errBody{"bad_request"})
+			return
+		}
+		if err := s.Store.UpdateDetails(r.Context(), userID(r), bio, city, contact); err != nil {
+			writeStoreErr(w, err)
+			return
+		}
+	}
+	s.writeProfile(w, r, userID(r))
+}
+
+func (s *Server) searchUsers(w http.ResponseWriter, r *http.Request) {
+	q, ok := normalizeName(r.URL.Query().Get("q"))
 	if !ok {
 		writeJSON(w, http.StatusBadRequest, errBody{"bad_request"})
 		return
 	}
-	if err := s.Store.Rename(r.Context(), userID(r), name); err != nil {
+	people, err := s.Store.SearchUsers(r.Context(), likePattern(q))
+	if err != nil {
 		writeStoreErr(w, err)
 		return
 	}
-	s.writeProfile(w, r, userID(r))
+	out := make([]any, 0, len(people))
+	for _, person := range people {
+		out = append(out, publicUserJSON(person))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"users": out})
+}
+
+func (s *Server) publicUser(w http.ResponseWriter, r *http.Request) {
+	if _, err := uuid.Parse(chi.URLParam(r, "id")); err != nil {
+		writeJSON(w, http.StatusBadRequest, errBody{"bad_request"})
+		return
+	}
+	person, err := s.Store.PublicUser(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user": publicUserJSON(person)})
+}
+
+func (s *Server) photoCards(w http.ResponseWriter, r *http.Request) {
+	raw := r.URL.Query()["id"]
+	if len(raw) == 0 || len(raw) > 40 {
+		writeJSON(w, http.StatusBadRequest, errBody{"bad_request"})
+		return
+	}
+	ids := make([]string, 0, len(raw))
+	for _, item := range raw {
+		canonical, err := canonicalFingerprint(item)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, errBody{"bad_request"})
+			return
+		}
+		ids = append(ids, canonical)
+	}
+	cards, err := s.Store.PhotoCards(r.Context(), ids)
+	if err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	out := make([]any, 0, len(cards))
+	for _, card := range cards {
+		out = append(out, photoCardJSON(card))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"photos": out})
+}
+
+func (s *Server) claimPhotos(w http.ResponseWriter, r *http.Request) {
+	sh := shareFrom(r)
+	if err := sh.Unavailable(); err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	uid, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Items []struct {
+			SHA256 string `json:"sha256"`
+			Kind   string `json:"kind"`
+		} `json:"items"`
+	}
+	if !readJSON(w, r, &body) || len(body.Items) == 0 || len(body.Items) > store.MaxSharePhotos {
+		writeJSON(w, http.StatusBadRequest, errBody{"bad_request"})
+		return
+	}
+	claims := make([]store.PhotoClaim, 0, len(body.Items))
+	for _, item := range body.Items {
+		if item.Kind != "shared" && item.Kind != "saved" {
+			writeJSON(w, http.StatusBadRequest, errBody{"bad_request"})
+			return
+		}
+		if item.Kind == "shared" && uid != sh.OwnerID {
+			writeJSON(w, http.StatusForbidden, errBody{"access_denied"})
+			return
+		}
+		fingerprint, err := canonicalFingerprint(item.SHA256)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, errBody{"bad_request"})
+			return
+		}
+		claims = append(claims, store.PhotoClaim{ID: fingerprint, Kind: item.Kind})
+	}
+	if err := s.Store.ClaimPhotos(r.Context(), sh.ID, uid, sh.OwnerID, claims); err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) writeSession(w http.ResponseWriter, r *http.Request, userID string, already bool) {
@@ -231,8 +368,23 @@ func profileJSON(p store.Profile) map[string]any {
 	return map[string]any{
 		"id":          p.ID,
 		"displayName": p.DisplayName,
+		"bio":         p.Bio,
+		"city":        p.City,
+		"contact":     p.Contact,
 		"appleLinked": p.AppleLinked,
 		"deviceId":    p.DeviceID,
+	}
+}
+
+func publicUserJSON(u store.PublicUser) map[string]any {
+	return map[string]any{
+		"id":          u.ID,
+		"displayName": u.DisplayName,
+		"bio":         u.Bio,
+		"city":        u.City,
+		"contact":     u.Contact,
+		"sharedCount": u.SharedCount,
+		"savedCount":  u.SavedCount,
 	}
 }
 
@@ -603,7 +755,11 @@ func (s *Server) getShare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sh := shareFrom(r)
-	writeJSON(w, http.StatusOK, shareJSON(sh))
+	body := shareJSON(sh)
+	if owner, err := s.Store.PublicUser(r.Context(), sh.OwnerID); err == nil {
+		body["owner"] = publicUserJSON(owner)
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 func (s *Server) manifest(w http.ResponseWriter, r *http.Request) {
@@ -941,6 +1097,75 @@ func writeStoreErr(w http.ResponseWriter, err error) {
 	default:
 		log.Printf("store: %v", err)
 		writeJSON(w, http.StatusInternalServerError, errBody{"internal"})
+	}
+}
+
+func canonicalFingerprint(s string) (string, error) {
+	raw, err := id.DecodeFixed(s, 32)
+	if err != nil {
+		return "", err
+	}
+	return id.Encode(raw), nil
+}
+
+func likePattern(q string) string {
+	replacer := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return "%" + replacer.Replace(strings.ToLower(q)) + "%"
+}
+
+func normalizeDetail(s string, max int) (string, error) {
+	s = strings.Join(strings.Fields(s), " ")
+	n := 0
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			return "", errDetail
+		}
+		n++
+	}
+	if n > max {
+		return "", errDetail
+	}
+	return s, nil
+}
+
+var errDetail = errors.New("detail")
+
+func photoCardJSON(card store.PhotoCard) map[string]any {
+	sharedBy := []any{}
+	holders := []any{}
+	savers := []any{}
+	for _, person := range card.People {
+		holder := map[string]any{
+			"id":          person.UserID,
+			"displayName": person.DisplayName,
+			"city":        person.City,
+			"shared":      person.Shared,
+			"saved":       person.Saved,
+		}
+		if person.FromID != "" {
+			holder["from"] = map[string]any{"id": person.FromID, "displayName": person.FromName}
+		}
+		holders = append(holders, holder)
+		if person.Shared {
+			sharedBy = append(sharedBy, map[string]any{
+				"id": person.UserID, "displayName": person.DisplayName, "city": person.City,
+			})
+		}
+		if person.Saved {
+			saver := map[string]any{
+				"id": person.UserID, "displayName": person.DisplayName, "city": person.City,
+			}
+			if person.FromID != "" {
+				saver["from"] = map[string]any{"id": person.FromID, "displayName": person.FromName}
+			}
+			savers = append(savers, saver)
+		}
+	}
+	return map[string]any{
+		"id":       card.ID,
+		"sharedBy": sharedBy,
+		"holders":  holders,
+		"savers":   savers,
 	}
 }
 

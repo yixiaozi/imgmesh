@@ -150,6 +150,7 @@ PostgreSQL。标识列存原始字节或存 base64url 均可，但全库只选�
   - `id`
   - `apple_sub`：可空，唯一。绑了 Apple 才能创建和撤销分享
   - `display_name`：非空时全站唯一，比较时忽略英文字母大小写
+  - `bio`、`city`、`contact`：用户自己填写的介绍、城市和联系方式，用来在 App 里找到对方。可以为空
   - `created_at`
 - `devices`
   - `id`：客户端生成一次并放在本机钥匙串或 localStorage，16 到 64 位
@@ -186,6 +187,16 @@ PostgreSQL。标识列存原始字节或存 base64url 均可，但全库只选�
   - `device_id`
   - `client`
   - `saved_at`：iPhone 存入相册的时间。从 imgmesh 移除不会删除这条，因为系统相册里的照片还在
+- `photo_cards`
+  - `id`：照片身份证。客户端对原图明文做 SHA-256，再编成 43 位 base64url。服务器只存这个指纹，不存像素
+- `photo_people`
+  - `photo_id` + `user_id`
+  - `shared`：这个人发出过这张照片
+  - `saved`：这个人保存过这张照片
+  - `from_user_id`：这份副本保存自谁。第一次记下之后不再改，所以后来再分享也不会把来源冲掉
+  - `share_id`：最近一次登记时的分享
+
+清单里的 `items[].sha256` 是可选项，值与身份证相同。旧清单没有这个字段时，客户端在解开原图后自己计算。
 
 对象键建议为 `{share_id_b64}/{object_id_b64}`，不要把密钥或明文文件名放进键。
 
@@ -197,7 +208,11 @@ PostgreSQL。标识列存原始字节或存 base64url 均可，但全库只选�
 
 - `POST /v1/register`：用设备号和名称注册。同一设备再调一次返回原来的用户。名称重复返回 `name_taken`
 - `POST /v1/devices/session`：这台设备已经注册过时换一张会话
-- `GET /v1/me`、`PATCH /v1/me`：查看和修改自己的名称
+- `GET /v1/me`、`PATCH /v1/me`：查看和修改自己的名称、介绍、城市、联系方式
+- `GET /v1/users?q=`：按名称、城市或联系方式找人
+- `GET /v1/users/{id}`：查看对方的公开资料，以及分享、保存过的张数
+- `GET /v1/photos?id=`：批量取照片身份证。返回谁分享了、谁有、谁保存了、保存自谁
+- `POST /v1/shares/{id}/photos`：登记这组照片。发送者用 `shared`，保存的人用 `saved`
 - `POST /v1/auth/apple`：校验 Sign in with Apple。带上现有会话时，把 Apple 绑到这个用户；没有会话时仍会建立发送者账号
 - `POST /v1/shares`：创建分享，保存 `access_tag`，按配额预占
 - `POST /v1/shares/{id}/uploads`：为一批对象签发 PUT 预签名。单对象明文超过 16 MiB 时改发 S3 multipart 的分片预签名

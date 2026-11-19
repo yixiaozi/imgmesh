@@ -89,9 +89,42 @@ type Event struct {
 type Profile struct {
 	ID          string
 	DisplayName string
+	Bio         string
+	City        string
+	Contact     string
 	AppleLinked bool
 	DeviceID    string
 	Platform    string
+}
+
+type PublicUser struct {
+	ID          string
+	DisplayName string
+	Bio         string
+	City        string
+	Contact     string
+	SharedCount int
+	SavedCount  int
+}
+
+type PhotoClaim struct {
+	ID   string
+	Kind string
+}
+
+type PhotoMember struct {
+	UserID      string
+	DisplayName string
+	City        string
+	Shared      bool
+	Saved       bool
+	FromID      string
+	FromName    string
+}
+
+type PhotoCard struct {
+	ID     string
+	People []PhotoMember
 }
 
 type Person struct {
@@ -134,7 +167,7 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 func (s *Store) Close() { s.pool.Close() }
 
 func (s *Store) Reset(ctx context.Context) error {
-	_, err := s.pool.Exec(ctx, `TRUNCATE holdings, events, objects, shares, sessions, devices, users CASCADE`)
+	_, err := s.pool.Exec(ctx, `TRUNCATE photo_people, photo_cards, holdings, events, objects, shares, sessions, devices, users CASCADE`)
 	return err
 }
 
@@ -303,11 +336,11 @@ func (s *Store) DeviceUser(ctx context.Context, deviceID string) (string, string
 func (s *Store) Profile(ctx context.Context, userID string) (Profile, error) {
 	var p Profile
 	err := s.pool.QueryRow(ctx, `
-		SELECT u.id::text, u.display_name, u.apple_sub IS NOT NULL,
+		SELECT u.id::text, u.display_name, u.bio, u.city, u.contact, u.apple_sub IS NOT NULL,
 		       COALESCE(d.id, ''), COALESCE(d.platform, '')
 		FROM users u LEFT JOIN devices d ON d.user_id = u.id
 		WHERE u.id=$1
-	`, userID).Scan(&p.ID, &p.DisplayName, &p.AppleLinked, &p.DeviceID, &p.Platform)
+	`, userID).Scan(&p.ID, &p.DisplayName, &p.Bio, &p.City, &p.Contact, &p.AppleLinked, &p.DeviceID, &p.Platform)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Profile{}, ErrNotFound
 	}
@@ -329,6 +362,136 @@ func (s *Store) Rename(ctx context.Context, userID, name string) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+func (s *Store) UpdateDetails(ctx context.Context, userID, bio, city, contact string) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE users SET bio=$2, city=$3, contact=$4 WHERE id=$1`, userID, bio, city, contact)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) PublicUser(ctx context.Context, userID string) (PublicUser, error) {
+	var u PublicUser
+	err := s.pool.QueryRow(ctx, `
+		SELECT u.id::text, u.display_name, u.bio, u.city, u.contact,
+		       (SELECT count(*) FROM photo_people p WHERE p.user_id = u.id AND p.shared),
+		       (SELECT count(*) FROM photo_people p WHERE p.user_id = u.id AND p.saved)
+		FROM users u WHERE u.id=$1
+	`, userID).Scan(&u.ID, &u.DisplayName, &u.Bio, &u.City, &u.Contact, &u.SharedCount, &u.SavedCount)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return PublicUser{}, ErrNotFound
+	}
+	return u, err
+}
+
+func (s *Store) SearchUsers(ctx context.Context, pattern string) ([]PublicUser, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT u.id::text, u.display_name, u.bio, u.city, u.contact,
+		       (SELECT count(*) FROM photo_people p WHERE p.user_id = u.id AND p.shared),
+		       (SELECT count(*) FROM photo_people p WHERE p.user_id = u.id AND p.saved)
+		FROM users u
+		WHERE u.display_name <> ''
+		  AND (lower(u.display_name) LIKE $1 ESCAPE '\'
+		    OR lower(u.city) LIKE $1 ESCAPE '\'
+		    OR lower(u.contact) LIKE $1 ESCAPE '\')
+		ORDER BY u.display_name
+		LIMIT 20
+	`, pattern)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []PublicUser{}
+	for rows.Next() {
+		var u PublicUser
+		if err := rows.Scan(&u.ID, &u.DisplayName, &u.Bio, &u.City, &u.Contact, &u.SharedCount, &u.SavedCount); err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ClaimPhotos(ctx context.Context, shareID []byte, userID, ownerID string, claims []PhotoClaim) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	for _, claim := range claims {
+		if _, err := tx.Exec(ctx, `INSERT INTO photo_cards (id) VALUES ($1) ON CONFLICT DO NOTHING`, claim.ID); err != nil {
+			return err
+		}
+		shared := claim.Kind == "shared"
+		saved := claim.Kind == "saved"
+		from := ownerID
+		if shared {
+			from = userID
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO photo_people (photo_id, user_id, shared, saved, from_user_id, share_id)
+			VALUES ($1, $2, $3, $4, $5, $6)
+			ON CONFLICT (photo_id, user_id) DO UPDATE SET
+			    shared = photo_people.shared OR EXCLUDED.shared,
+			    saved = photo_people.saved OR EXCLUDED.saved,
+			    from_user_id = CASE
+			        WHEN photo_people.from_user_id IS NULL THEN EXCLUDED.from_user_id
+			        ELSE photo_people.from_user_id
+			    END,
+			    share_id = COALESCE(EXCLUDED.share_id, photo_people.share_id),
+			    updated_at = now()
+		`, claim.ID, userID, shared, saved, from, shareID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *Store) PhotoCards(ctx context.Context, ids []string) ([]PhotoCard, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT p.photo_id, u.id::text, u.display_name, u.city, p.shared, p.saved,
+		       COALESCE(fu.id::text, ''), COALESCE(fu.display_name, '')
+		FROM photo_people p
+		JOIN users u ON u.id = p.user_id
+		LEFT JOIN users fu ON fu.id = p.from_user_id
+		WHERE p.photo_id = ANY($1::text[])
+		ORDER BY p.updated_at
+	`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	byID := map[string][]PhotoMember{}
+	for rows.Next() {
+		var photoID string
+		var member PhotoMember
+		if err := rows.Scan(&photoID, &member.UserID, &member.DisplayName, &member.City, &member.Shared, &member.Saved, &member.FromID, &member.FromName); err != nil {
+			return nil, err
+		}
+		byID[photoID] = append(byID[photoID], member)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]PhotoCard, 0, len(ids))
+	seen := map[string]bool{}
+	for _, photoID := range ids {
+		if seen[photoID] {
+			continue
+		}
+		seen[photoID] = true
+		people := byID[photoID]
+		if people == nil {
+			people = []PhotoMember{}
+		}
+		out = append(out, PhotoCard{ID: photoID, People: people})
+	}
+	return out, nil
 }
 
 func (s *Store) BindApple(ctx context.Context, userID, sub string) error {

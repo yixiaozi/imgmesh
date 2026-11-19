@@ -16,8 +16,43 @@ struct APIClient {
 
     struct AccountUser: Decodable {
         var displayName: String
+        var bio: String?
+        var city: String?
+        var contact: String?
         var appleLinked: Bool
         var deviceId: String
+    }
+
+    struct PublicUser: Decodable, Identifiable {
+        var id: String
+        var displayName: String
+        var bio: String
+        var city: String
+        var contact: String
+        var sharedCount: Int
+        var savedCount: Int
+    }
+
+    struct NamedUser: Decodable, Identifiable {
+        var id: String
+        var displayName: String
+        var city: String?
+    }
+
+    struct PhotoHolder: Decodable, Identifiable {
+        var id: String
+        var displayName: String
+        var city: String?
+        var shared: Bool?
+        var saved: Bool?
+        var from: NamedUser?
+    }
+
+    struct PhotoCard: Decodable {
+        var id: String
+        var sharedBy: [NamedUser]
+        var holders: [PhotoHolder]
+        var savers: [PhotoHolder]
     }
 
     func register(deviceID: String, displayName: String) async throws -> Account {
@@ -32,12 +67,33 @@ struct APIClient {
         ])
     }
 
-    func rename(token: String, displayName: String) async throws -> AccountUser {
+    func saveProfile(token: String, displayName: String, bio: String, city: String, contact: String) async throws -> AccountUser {
         struct Body: Decodable { var user: AccountUser }
         let body: Body = try await send(path: "/v1/me", method: "PATCH", token: token, access: nil, payload: [
-            "displayName": displayName,
+            "displayName": displayName, "bio": bio, "city": city, "contact": contact,
         ])
         return body.user
+    }
+
+    func searchUsers(token: String, query: String) async throws -> [PublicUser] {
+        struct Body: Decodable { var users: [PublicUser] }
+        let escaped = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
+        let body: Body = try await send(path: "/v1/users?q=\(escaped)", method: "GET", token: token, access: nil, payload: nil)
+        return body.users
+    }
+
+    func photoCards(token: String, ids: [String]) async throws -> [PhotoCard] {
+        struct Body: Decodable { var photos: [PhotoCard] }
+        let query = ids.map { "id=\($0)" }.joined(separator: "&")
+        let body: Body = try await send(path: "/v1/photos?\(query)", method: "GET", token: token, access: nil, payload: nil)
+        return body.photos
+    }
+
+    func claim(token: String, shareID: String, access: String, items: [[String: String]]) async throws {
+        if items.isEmpty { return }
+        try await sendEmpty(path: "/v1/shares/\(shareID)/photos", method: "POST", token: token, access: access, payload: [
+            "items": items,
+        ])
     }
 
     func login(existingToken: String?, identityToken: String, displayName: String) async throws -> Account {

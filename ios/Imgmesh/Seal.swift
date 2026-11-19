@@ -55,6 +55,10 @@ enum ImgmeshSeal {
         return try AES.GCM.open(box, using: key, authenticating: aad)
     }
 
+    static func fingerprint(_ data: Data) -> String {
+        encode(Data(SHA256.hash(data: data)))
+    }
+
     static func encode(_ data: Data) -> String {
         data.base64EncodedString()
             .replacingOccurrences(of: "+", with: "-")
@@ -82,6 +86,7 @@ struct ManifestItem: Codable, Identifiable {
     var mime: String
     var bytes: Int
     var nonce: String
+    var sha256: String?
     var thumb: ManifestThumb?
 }
 
