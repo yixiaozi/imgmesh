@@ -39,6 +39,7 @@ func main() {
 		Apple:          &auth.Verifier{Audience: cfg.audience},
 		TeamID:         cfg.teamID,
 		AllowedOrigins: cfg.origins,
+		AdminToken:     cfg.adminToken,
 	}
 	if cfg.s3.Bucket != "" {
 		s3, err := blob.NewS3(cfg.s3)
@@ -73,6 +74,7 @@ type config struct {
 	teamID      string
 	quota       int64
 	origins     []string
+	adminToken  string
 	s3          blob.S3Config
 }
 
@@ -97,6 +99,7 @@ func load() (config, error) {
 		teamID:      os.Getenv("APPLE_TEAM_ID"),
 		quota:       quota,
 		origins:     origins,
+		adminToken:  os.Getenv("ADMIN_TOKEN"),
 		s3: blob.S3Config{
 			Bucket:    os.Getenv("S3_BUCKET"),
 			Region:    env("S3_REGION", "auto"),

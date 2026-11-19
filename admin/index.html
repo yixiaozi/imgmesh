@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex" />
+  <title>imgmesh 管理</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/styles.css?v=tabs4" />
+</head>
+<body class="admin-page">
+  <header class="site-header">
+    <a class="brand" href="/">
+      <img class="brand-logo" src="/favicon.svg" width="28" height="28" alt="" />
+      <span>imgmesh</span>
+    </a>
+    <nav class="site-nav" aria-label="站点">
+      <a href="/">回首页</a>
+    </nav>
+  </header>
+
+  <main class="admin-shell">
+    <h1>管理</h1>
+    <form class="admin-login" id="login">
+      <label>管理口令 <input name="token" type="password" autocomplete="current-password" required /></label>
+      <button class="btn btn-primary" type="submit">进入</button>
+      <p class="account-error" id="login-error"></p>
+    </form>
+
+    <div id="board" hidden>
+      <div class="usage-grid">
+        <article><strong id="n-users">–</strong><span>用户</span></article>
+        <article><strong id="n-devices">–</strong><span>设备</span></article>
+        <article><strong id="n-shares">–</strong><span>分享</span></article>
+        <article><strong id="n-photos">–</strong><span>已传输的照片</span></article>
+      </div>
+      <p class="usage-updated" id="updated">正在读取</p>
+      <div class="tabs" role="tablist" aria-label="明细">
+        <button type="button" data-tab="people" aria-selected="true">用户</button>
+        <button type="button" data-tab="shares" aria-selected="false">分享</button>
+        <button type="button" data-tab="photos" aria-selected="false">照片</button>
+        <button type="button" data-tab="events" aria-selected="false">动态</button>
+      </div>
+      <div class="admin-table-wrap" data-panel="people"></div>
+      <div class="admin-table-wrap" data-panel="shares" hidden></div>
+      <div class="admin-table-wrap" data-panel="photos" hidden></div>
+      <div class="admin-table-wrap" data-panel="events" hidden></div>
+      <button class="cta-note" id="lock" type="button">锁上</button>
+    </div>
+  </main>
+
+  <script>
+    const tokenKey = "imgmesh-admin";
+    const kindText = {
+      user: "登记", device: "设备", photo: "传照片", view: "打开", open: "打开",
+      download: "下载", save: "保存", remove: "移除",
+    };
+    const platformText = { ios: "iPhone", web: "浏览器", desktop: "电脑" };
+
+    function when(value) {
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return "";
+      return date.toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+    }
+
+    function size(bytes) {
+      const n = Number(bytes) || 0;
+      if (n < 1024) return n + " B";
+      if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+      return (n / 1024 / 1024).toFixed(1) + " MB";
+    }
+
+    function table(headers, rows) {
+      const el = document.createElement("table");
+      el.className = "admin-table";
+      const head = document.createElement("thead");
+      const hr = document.createElement("tr");
+      headers.forEach((label) => {
+        const cell = document.createElement("th");
+        cell.textContent = label;
+        hr.append(cell);
+      });
+      head.append(hr);
+      const body = document.createElement("tbody");
+      if (!rows.length) {
+        const tr = document.createElement("tr");
+        const td = document.createElement("td");
+        td.colSpan = headers.length;
+        td.textContent = "还没有记录。";
+        tr.append(td);
+        body.append(tr);
+      }
+      rows.forEach((cells) => {
+        const tr = document.createElement("tr");
+        cells.forEach((value) => {
+          const td = document.createElement("td");
+          td.textContent = value;
+          tr.append(td);
+        });
+        body.append(tr);
+      });
+      el.append(head, body);
+      return el;
+    }
+
+    function show(name) {
+      document.querySelectorAll(".admin-page [data-tab]").forEach((button) => {
+        button.setAttribute("aria-selected", button.dataset.tab === name ? "true" : "false");
+      });
+      document.querySelectorAll(".admin-page [data-panel]").forEach((panel) => {
+        panel.hidden = panel.dataset.panel !== name;
+      });
+    }
+
+    document.querySelectorAll(".admin-page [data-tab]").forEach((button) => {
+      button.addEventListener("click", () => show(button.dataset.tab));
+    });
+
+    async function loadBoard() {
+      const token = sessionStorage.getItem(tokenKey) || "";
+      if (!token) return;
+      const updated = document.querySelector("#updated");
+      const res = await fetch("/v1/admin/overview", { headers: { "X-Imgmesh-Admin": token } });
+      if (res.status === 401) {
+        sessionStorage.removeItem(tokenKey);
+        document.querySelector("#board").hidden = true;
+        document.querySelector("#login").hidden = false;
+        document.querySelector("#login-error").textContent = "口令不对。";
+        return;
+      }
+      if (res.status === 503) {
+        updated.textContent = "服务器还没有设置管理口令。";
+        return;
+      }
+      if (!res.ok) {
+        updated.textContent = "没有读到明细。";
+        return;
+      }
+      const body = await res.json();
+      document.querySelector("#n-users").textContent = Number(body.users || 0).toLocaleString("zh-CN");
+      document.querySelector("#n-devices").textContent = Number(body.devices || 0).toLocaleString("zh-CN");
+      document.querySelector("#n-shares").textContent = Number(body.shares || 0).toLocaleString("zh-CN");
+      document.querySelector("#n-photos").textContent = Number(body.photosTransferred || 0).toLocaleString("zh-CN");
+      const people = document.querySelector('[data-panel="people"]');
+      const shares = document.querySelector('[data-panel="shares"]');
+      const photos = document.querySelector('[data-panel="photos"]');
+      const events = document.querySelector('[data-panel="events"]');
+      people.replaceChildren(table(["名称", "城市", "设备", "设备号", "登记时间"], (body.people || []).map((row) => [
+        row.name || "未命名", row.city || "—", platformText[row.platform] || row.platform || "—", row.deviceId || "—", when(row.createdAt),
+      ])));
+      shares.replaceChildren(table(["分享", "谁发出的", "张数", "大小", "状态", "时间"], (body.shareList || []).map((row) => [
+        row.id, row.owner || "未命名", String(row.photos), size(row.bytes), row.revoked ? "已撤销" : "有效", when(row.createdAt),
+      ])));
+      photos.replaceChildren(table(["谁的", "原图大小", "状态", "时间"], (body.photos || []).map((row) => [
+        row.owner || "未命名", size(row.bytes), row.status === "ready" ? "已传完" : "未完成", when(row.at),
+      ])));
+      events.replaceChildren(table(["时间", "谁", "做了什么", "从哪"], (body.events || []).map((row) => [
+        when(row.at), row.name || "未命名", kindText[row.kind] || row.kind, platformText[row.client] || row.client,
+      ])));
+      updated.textContent = "更新于 " + when(body.updatedAt);
+    }
+
+    function enter() {
+      document.querySelector("#login").hidden = true;
+      document.querySelector("#board").hidden = false;
+      loadBoard();
+    }
+
+    document.querySelector("#login").addEventListener("submit", (event) => {
+      event.preventDefault();
+      const token = new FormData(event.currentTarget).get("token");
+      sessionStorage.setItem(tokenKey, String(token || ""));
+      document.querySelector("#login-error").textContent = "";
+      enter();
+    });
+    document.querySelector("#lock").addEventListener("click", () => {
+      sessionStorage.removeItem(tokenKey);
+      document.querySelector("#board").hidden = true;
+      document.querySelector("#login").hidden = false;
+    });
+    if (sessionStorage.getItem(tokenKey)) enter();
+    setInterval(() => { if (sessionStorage.getItem(tokenKey)) loadBoard(); }, 5000);
+  </script>
+</body>
+</html>

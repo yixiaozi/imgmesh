@@ -11,58 +11,79 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600&family=Noto+Serif+SC:wght@500;600;700&family=Outfit:wght@500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="/styles.css?v=tabs4" />
 </head>
-<body>
+<body class="home">
   <header class="site-header">
-    <a class="brand" href="/">
+    <a class="brand" href="#share">
       <img class="brand-logo" src="/favicon.svg" width="28" height="28" alt="" />
       <span>imgmesh</span>
     </a>
     <nav class="site-nav" aria-label="站点">
-      <a href="#usage">使用情况</a>
-      <a href="/install/">安装使用</a>
+      <a href="/install/">安装说明</a>
     </nav>
   </header>
 
-  <main>
-    <section class="hero" aria-labelledby="hero-title">
-      <div class="hero-copy">
-        <p class="brand-mark" aria-hidden="true">
-          <img class="brand-logo brand-logo-lg" src="/favicon.svg" width="44" height="44" alt="" />
-          <span>imgmesh</span>
-        </p>
-        <h1 id="hero-title">别再让照片过期消失</h1>
-        <p class="lede">有人微信发来一堆旅行照，你没及时下载，过期就没了——永远找不回来。imgmesh 用加密链接分享：选照片、生成链接发出去；对方随时能在浏览器看，装了 App 还能直接存进相册。</p>
-        <div class="cta-row">
-          <a class="btn btn-primary" href="/install/">安装和使用</a>
-          <a class="cta-note" href="#how">先看分享是怎么发生的</a>
-        </div>
-      </div>
-      <div class="hero-visual" aria-hidden="true">
-        <div class="link-stage">
-          <div class="photo-stack">
-            <span class="tile t1"></span>
-            <span class="tile t2"></span>
-            <span class="tile t3"></span>
-            <span class="tile t4"></span>
-          </div>
-          <div class="link-rail">
-            <span class="rail-dot"></span>
-            <span class="rail-line"></span>
-            <span class="rail-lock">钥</span>
-          </div>
-          <div class="link-chip">
-            <span class="chip-proto">https</span>
-            <span class="chip-host">imgmesh.com/s/</span>
-            <span class="chip-key">a7f3…#k=·</span>
+  <div class="home-shell">
+    <div class="tabs" role="tablist" aria-label="首页">
+      <button type="button" role="tab" id="tab-share" data-tab="share" aria-controls="panel-share" aria-selected="true">分享</button>
+      <button type="button" role="tab" id="tab-usage" data-tab="usage" aria-controls="panel-usage" aria-selected="false">使用情况</button>
+      <button type="button" role="tab" id="tab-compare" data-tab="compare" aria-controls="panel-compare" aria-selected="false">和微信比</button>
+      <button type="button" role="tab" id="tab-install" data-tab="install" aria-controls="panel-install" aria-selected="false">安装</button>
+    </div>
+
+    <section class="tab-panel" id="panel-share" data-panel="share" role="tabpanel" aria-labelledby="tab-share">
+      <div class="hero">
+        <div class="hero-copy">
+          <h1 id="hero-title">别再让照片过期消失</h1>
+          <p class="lede">旅行照放在加密链接里。对方随时能在浏览器看，装了 App 还能直接存进相册。</p>
+          <div class="cta-row">
+            <a class="btn btn-primary" href="/install/">安装和使用</a>
+            <button class="cta-note tab-jump" type="button" data-jump="install">看安装步骤</button>
           </div>
         </div>
+        <div class="hero-visual" aria-hidden="true">
+          <div class="link-stage">
+            <div class="photo-stack">
+              <span class="tile t1"></span>
+              <span class="tile t2"></span>
+              <span class="tile t3"></span>
+              <span class="tile t4"></span>
+            </div>
+            <div class="link-rail">
+              <span class="rail-dot"></span>
+              <span class="rail-line"></span>
+              <span class="rail-lock">钥</span>
+            </div>
+            <div class="link-chip">
+              <span class="chip-proto">https</span>
+              <span class="chip-host">imgmesh.com/s/</span>
+              <span class="chip-key">a7f3…#k=·</span>
+            </div>
+          </div>
+        </div>
       </div>
+      <ol class="steps steps-compact">
+        <li><strong>选照片</strong><span>在 App 里勾选旅行相册，一次可多张。</span></li>
+        <li><strong>生成链接</strong><span>本地加密后上传。密钥只写在链接的 #k= 后面。</span></li>
+        <li><strong>对方打开</strong><span>浏览器能看。装了 App 可以存进系统相册。</span></li>
+      </ol>
     </section>
 
-    <section class="section compare" id="compare" aria-labelledby="compare-title">
-      <h2 id="compare-title">imgmesh vs 微信</h2>
+    <section class="tab-panel" id="panel-usage" data-panel="usage" role="tabpanel" aria-labelledby="tab-usage" hidden>
+      <h2 id="usage-title">现在的使用情况</h2>
+      <p class="section-lead">用户和设备按登记计算。照片按已经传完的原图计算，撤销之后仍然保留。每 5 秒刷新。</p>
+      <div class="usage-grid">
+        <article><strong id="stat-users">–</strong><span>用户</span></article>
+        <article><strong id="stat-devices">–</strong><span>设备</span></article>
+        <article><strong id="stat-photos">–</strong><span>已传输的照片</span></article>
+      </div>
+      <p class="usage-updated" id="stat-updated">正在读取</p>
+      <ol class="usage-feed" id="stat-feed"></ol>
+    </section>
+
+    <section class="tab-panel" id="panel-compare" data-panel="compare" role="tabpanel" aria-labelledby="tab-compare" hidden>
+      <h2>imgmesh 和微信</h2>
       <p class="section-lead">同一批旅行照片，两种分享方式差在哪。</p>
       <div class="compare-wrap" role="region" aria-label="imgmesh 与微信对比" tabindex="0">
         <table class="compare-table">
@@ -77,7 +98,7 @@
             <tr>
               <th scope="row">图片会不会过期</th>
               <td>聊天图过几天可能失效，没下就没了</td>
-              <td class="is-better">加密链接可反复打开，不赌时效</td>
+              <td class="is-better">加密链接可反复打开</td>
             </tr>
             <tr>
               <th scope="row">保存到相册</th>
@@ -92,133 +113,88 @@
             <tr>
               <th scope="row">加密与隐私</th>
               <td>走聊天通道，服务端可读消息内容</td>
-              <td class="is-better">端到端加密；服务端只存密文，密钥在链接里</td>
+              <td class="is-better">端到端加密；服务端只存密文</td>
             </tr>
             <tr>
               <th scope="row">下载与删除可见</th>
-              <td>不知道对方有没有保存、删没删</td>
-              <td class="is-better">可追踪谁下载过、是否已删除</td>
-            </tr>
-            <tr>
-              <th scope="row">跨平台</th>
-              <td>主要在微信内查看</td>
-              <td class="is-better">浏览器即可；App 先做 iOS，再 Android / Windows / Mac</td>
+              <td>不知道对方有没有保存</td>
+              <td class="is-better">能看见谁打开过、谁保存过</td>
             </tr>
           </tbody>
         </table>
       </div>
     </section>
 
-    <section class="section how" id="how" aria-labelledby="how-title">
-      <h2 id="how-title">三步分享</h2>
-      <p class="section-lead">选照片 → 生成加密链接 → 发出去。对方点开就能看。</p>
-      <ol class="steps">
-        <li>
-          <strong>选照片</strong>
-          <span>在 App 里勾选旅行相册，一次可多张。</span>
-        </li>
-        <li>
-          <strong>生成链接</strong>
-          <span>本地加密后上传；密钥写在链接里，不经过明文传输给服务器。</span>
-        </li>
-        <li>
-          <strong>对方打开</strong>
-          <span>浏览器在线浏览；已装 App 可一键存入系统相册。</span>
-        </li>
-      </ol>
-    </section>
-
-    <section class="section" id="install" aria-labelledby="install-title">
-      <h2 id="install-title">装到自己的 iPhone</h2>
-      <p class="section-lead">还没上架 App Store。用 Xcode 装到手机；对方不用装，浏览器打开链接就能看。</p>
+    <section class="tab-panel" id="panel-install" data-panel="install" role="tabpanel" aria-labelledby="tab-install" hidden>
+      <h2>装到自己的 iPhone</h2>
+      <p class="section-lead">还没上架 App Store。对方不用装，浏览器打开链接就能看。</p>
       <ol class="steps">
         <li>
           <strong>打开工程</strong>
-          <span>在 Mac 上克隆仓库，用 Xcode 16 打开 ios/Imgmesh.xcodeproj。签名团队选你的 Apple Developer 团队，Bundle ID 保持 com.imgmesh.app。</span>
+          <span>用 Xcode 16 打开 ios/Imgmesh.xcodeproj。签名团队选你的 Apple Developer 团队，Bundle ID 保持 com.imgmesh.app。</span>
         </li>
         <li>
           <strong>运行到手机</strong>
-          <span>iPhone 系统要 iOS 17 或更新。连上 Mac 后点运行。第一次打开，到「设置 → 通用 → VPN 与设备管理」里信任开发者。</span>
+          <span>iPhone 要 iOS 17 或更新。连上 Mac 后点运行，再到「设置 → 通用 → VPN 与设备管理」里信任开发者。</span>
         </li>
         <li>
-          <strong>登录并选照片</strong>
-          <span>先用一个没人用过的名称注册这台手机，再用 Apple 登录。然后写标题，点「选择照片」。复制链接时要带上井号后面的 #k=。</span>
-        </li>
-        <li>
-          <strong>对方打开、存进相册</strong>
-          <span>浏览器能直接看。装了 App 就把完整链接粘贴到「打开一份分享」，再点「保存到相册」。</span>
+          <strong>登记并选照片</strong>
+          <span>先用一个没人用过的名称注册这台手机，再用 Apple 登录。复制链接时要带上井号后面的 #k=。</span>
         </li>
       </ol>
       <a class="btn btn-primary" href="/install/">完整步骤</a>
     </section>
-
-    <section class="section usage" id="usage" aria-labelledby="usage-title">
-      <h2 id="usage-title">现在的使用情况</h2>
-      <p class="section-lead">用户和设备按登记计算。照片按已经传完的原图计算，撤销分享之后仍然保留。页面每 5 秒向服务器要一次最新数字。</p>
-      <div class="usage-grid">
-        <article><strong id="stat-users">–</strong><span>用户</span></article>
-        <article><strong id="stat-devices">–</strong><span>设备</span></article>
-        <article><strong id="stat-photos">–</strong><span>已传输的照片</span></article>
-      </div>
-      <p class="usage-updated" id="stat-updated">正在读取</p>
-      <ol class="usage-feed" id="stat-feed"></ol>
-    </section>
-
-    <section class="section features" aria-labelledby="features-title">
-      <h2 id="features-title">为什么放心发</h2>
-      <p class="section-lead">隐私、可见性、差网上传，三件事一起做对。</p>
-
-      <article class="feature">
-        <h3>端到端加密</h3>
-        <p>服务端只存密文。解密密钥在链接片段里，服务器读不到你的私人照片。</p>
-      </article>
-
-      <article class="feature">
-        <h3>每张照片一张身份证</h3>
-        <p>缩略图网格里可以翻看一组照片。点开一张，能看到它的身份证：谁分享过、谁手上有、保存自谁、又有谁保存了，也可以点赞。资料里可以写介绍、城市和联系方式，别人在 App 里就能找到你、加为好友，好友之间可以发消息。</p>
-      </article>
-
-      <article class="feature">
-        <h3>下载与删除可追踪</h3>
-        <p>谁已经存进相册、谁还没下、是否后来又删了，你都能看见——不用再猜对方有没有留住那些会过期的图。</p>
-      </article>
-
-      <article class="feature">
-        <h3>P2P + 服务器兜底</h3>
-        <p>网络好时优先点对点传；信号差时自动改走服务器，旅行途中也能传完。</p>
-      </article>
-    </section>
-
-    <section class="section platforms" aria-labelledby="platforms-title">
-      <h2 id="platforms-title">平台节奏</h2>
-      <p class="section-lead">先把 iOS 做好，再铺到其他端。</p>
-      <ul class="platform-list">
-        <li><em>现在</em> iOS</li>
-        <li>随后 Android</li>
-        <li>再后 Windows、Mac</li>
-      </ul>
-    </section>
-
-    <section class="section closing" aria-labelledby="closing-title">
-      <h2 id="closing-title">过期不再是结局</h2>
-      <p class="section-lead">群里只留链接，大图在加密分享里随时可看、可存——不用再怕「当时没下，后来没了」。</p>
-      <a class="btn btn-primary" href="/install/">去安装</a>
-    </section>
-  </main>
+  </div>
 
   <footer class="site-footer">
     <p>
-      <a class="brand" href="/">
+      <a class="brand" href="#share">
         <img class="brand-logo" src="/favicon.svg" width="22" height="22" alt="" />
         <span>imgmesh</span>
       </a>
     </p>
-    <p class="fine"><a href="/install/">安装和使用</a></p>
+    <p class="fine"><a href="/install/">安装和使用</a> · <a href="/admin/">管理</a></p>
     <p class="fine">© <span id="y"></span> imgmesh.com</p>
   </footer>
 
   <script>
     document.getElementById("y").textContent = new Date().getFullYear();
+
+    const tabNames = ["share", "usage", "compare", "install"];
+
+    function tabFromHash() {
+      const name = location.hash.replace("#", "");
+      if (name === "how") return "share";
+      return tabNames.includes(name) ? name : "share";
+    }
+
+    function selectTab(name) {
+      document.querySelectorAll("[data-tab]").forEach((button) => {
+        const on = button.dataset.tab === name;
+        button.setAttribute("aria-selected", on ? "true" : "false");
+        button.tabIndex = on ? 0 : -1;
+      });
+      document.querySelectorAll("[data-panel]").forEach((panel) => {
+        panel.hidden = panel.dataset.panel !== name;
+      });
+    }
+
+    document.querySelectorAll("[data-tab]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const name = button.dataset.tab;
+        history.replaceState(null, "", "#" + name);
+        selectTab(name);
+      });
+    });
+    document.querySelectorAll("[data-jump]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const name = button.dataset.jump;
+        history.replaceState(null, "", "#" + name);
+        selectTab(name);
+      });
+    });
+    window.addEventListener("hashchange", () => selectTab(tabFromHash()));
+    selectTab(tabFromHash());
 
     const usageText = {
       user: (name) => name + "登记成了用户",
@@ -245,6 +221,7 @@
 
     async function loadUsage() {
       const updated = document.querySelector("#stat-updated");
+      if (!updated) return;
       try {
         const res = await fetch("/v1/stats");
         if (!res.ok) throw new Error("stats");
@@ -264,7 +241,7 @@
           const item = document.createElement("li");
           const text = document.createElement("span");
           const line = usageText[event.kind];
-          text.textContent = line ? line(event.name || "未命名", event.detail || "") : (event.name || "有人") + " 使用了 imgmesh";
+          text.textContent = line ? line(event.name || "未命名", event.detail || "") : (event.name || "有人") + "使用了 imgmesh";
           const when = document.createElement("time");
           when.dateTime = event.at || "";
           when.textContent = usageTime(event.at);

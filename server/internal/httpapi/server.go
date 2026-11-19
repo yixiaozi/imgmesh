@@ -39,6 +39,7 @@ type Server struct {
 	PartSize           int64
 	DiskFreeMin        uint64
 	AllowedOrigins     []string
+	AdminToken         string
 }
 
 type ctxKey int
@@ -65,6 +66,7 @@ func (s *Server) Handler() http.Handler {
 	r.Route("/v1", func(r chi.Router) {
 		r.Get("/health", s.health)
 		r.Get("/stats", s.usage)
+		r.Get("/admin/overview", s.adminOverview)
 		r.Post("/auth/apple", s.authApple)
 		r.Post("/register", s.register)
 		r.Post("/devices/session", s.deviceSession)

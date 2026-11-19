@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -886,6 +887,71 @@ func TestLikesFriendsAndMessages(t *testing.T) {
 	res = do(t, client, http.MethodPost, base+"/v1/messages", jia.Token, "", map[string]string{"to": yi.ID, "body": "   "})
 	if res.StatusCode != 400 {
 		t.Fatalf("blank message %d", res.StatusCode)
+	}
+}
+
+func TestAdminOverview(t *testing.T) {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		dsn = "postgres:///imgmesh_test?host=/var/run/postgresql"
+	}
+	ctx := context.Background()
+	st, err := store.Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(st.Close)
+	if err := st.Reset(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := "http://" + ln.Addr().String()
+	api := &Server{Store: st, Secret: bytes.Repeat([]byte{7}, 32), PublicBaseURL: base, Apple: fakeApple{}, DiskFreeMin: 1, AdminToken: "test-admin-token"}
+	srv := &http.Server{Handler: api.Handler()}
+	go srv.Serve(ln)
+	t.Cleanup(func() { srv.Close() })
+	client := &http.Client{Timeout: 10 * time.Second}
+	registerNamed(t, client, base, "admin-owner-device01", "海边")
+
+	res, err := client.Get(base + "/v1/admin/overview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != 401 {
+		t.Fatalf("open admin %d", res.StatusCode)
+	}
+	res.Body.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, base+"/v1/admin/overview", nil)
+	req.Header.Set("X-Imgmesh-Admin", "nope")
+	res, err = client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != 401 {
+		t.Fatalf("bad admin %d", res.StatusCode)
+	}
+	res.Body.Close()
+
+	req, _ = http.NewRequest(http.MethodGet, base+"/v1/admin/overview", nil)
+	req.Header.Set("X-Imgmesh-Admin", "test-admin-token")
+	res, err = client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := readBody(res)
+	if res.StatusCode != 200 || !bytes.Contains(body, []byte("海边")) || bytes.Contains(body, []byte("accessTag")) {
+		t.Fatalf("admin %d %s", res.StatusCode, body)
+	}
+
+	closed := &Server{Store: st, Secret: bytes.Repeat([]byte{7}, 32), PublicBaseURL: base, Apple: fakeApple{}, DiskFreeMin: 1}
+	rec := httptest.NewRecorder()
+	closed.adminOverview(rec, httptest.NewRequest(http.MethodGet, "/v1/admin/overview", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unconfigured %d", rec.Code)
 	}
 }
 

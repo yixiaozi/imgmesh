@@ -26,6 +26,11 @@ ADDR=127.0.0.1:8097
 EOF
   unset PW SECRET
 fi
+if ! grep -q '^ADMIN_TOKEN=.' "$ENV_FILE"; then
+  TOKEN="$(openssl rand -hex 24)"
+  printf '\nADMIN_TOKEN=%s\n' "$TOKEN" >> "$ENV_FILE"
+  unset TOKEN
+fi
 chmod 600 "$ENV_FILE"
 chown root:root "$ENV_FILE"
 

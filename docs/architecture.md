@@ -233,6 +233,7 @@ PostgreSQL。标识列存原始字节或存 base64url 均可，但全库只选�
 - `GET /v1/messages?with=`：读取和某位好友的最近 50 条消息，并记为已读。还不是好友时返回 `not_friends`
 - `POST /v1/messages`：给好友发一条不超过 1000 字的消息
 - `GET /v1/stats`：公开的使用情况，不需要登录。返回用户数、设备数、已经传完的原图数，以及最近的登记、传图、查看、下载和保存。不返回链接或密钥
+- `GET /v1/admin/overview`：管理明细。请求头 `X-Imgmesh-Admin` 要和服务器的 `ADMIN_TOKEN` 一致。返回用户、设备、分享、原图和最近动态。不返回密钥、访问标签或消息正文
 - `POST /v1/shares/{id}/photos`：登记这组照片。发送者用 `shared`，保存的人用 `saved`
 - `POST /v1/auth/apple`：校验 Sign in with Apple。带上现有会话时，把 Apple 绑到这个用户；没有会话时仍会建立发送者账号
 - `POST /v1/shares`：创建分享，保存 `access_tag`，按配额预占
