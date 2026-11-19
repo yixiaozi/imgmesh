@@ -57,6 +57,31 @@ struct APIClient {
         var likeCount: Int
         var liked: Bool
         var likedBy: [NamedUser]
+        var comments: [PhotoComment]
+    }
+
+    struct PhotoComment: Decodable, Identifiable {
+        var id: String
+        var userId: String
+        var displayName: String
+        var body: String
+        var createdAt: String
+        var mine: Bool
+    }
+
+    struct FeedItem: Decodable, Identifiable {
+        var id: String
+        var name: String
+        var text: String
+        var summary: String
+        var at: String
+        var read: Bool
+    }
+
+    struct DeviceInfo: Decodable, Identifiable {
+        var id: String
+        var platform: String
+        var createdAt: String
     }
 
     struct SocialUser: Decodable, Identifiable {
@@ -187,9 +212,9 @@ struct APIClient {
         }
     }
 
-    func reserve(token: String, shareID: String, objects: [[String: Any]]) async throws -> [UploadPlan] {
+    func reserve(token: String, shareID: String, access: String, objects: [[String: Any]]) async throws -> [UploadPlan] {
         struct Body: Decodable { var uploads: [UploadPlan] }
-        let body: Body = try await send(path: "/v1/shares/\(shareID)/uploads", method: "POST", token: token, access: nil, payload: [
+        let body: Body = try await send(path: "/v1/shares/\(shareID)/uploads", method: "POST", token: token, access: access, payload: [
             "objects": objects,
         ])
         return body.uploads
@@ -207,12 +232,48 @@ struct APIClient {
         return http.value(forHTTPHeaderField: "ETag") ?? ""
     }
 
-    func complete(token: String, shareID: String, objects: [[String: Any]], manifestID: String, nonce: String) async throws {
-        try await sendEmpty(path: "/v1/shares/\(shareID)/uploads/complete", method: "POST", token: token, access: nil, payload: [
+    func complete(token: String, shareID: String, access: String, objects: [[String: Any]], manifestID: String, nonce: String) async throws {
+        try await sendEmpty(path: "/v1/shares/\(shareID)/uploads/complete", method: "POST", token: token, access: access, payload: [
             "objects": objects,
             "manifestObjectId": manifestID,
             "manifestNonce": nonce,
         ])
+    }
+
+    func feed(token: String) async throws -> (unread: Int, items: [FeedItem]) {
+        struct Body: Decodable { var unread: Int; var items: [FeedItem] }
+        let body: Body = try await send(path: "/v1/activity", method: "GET", token: token, access: nil, payload: nil)
+        return (body.unread, body.items)
+    }
+
+    func markFeed(token: String, id: String) async throws {
+        try await sendEmpty(path: "/v1/activity/read", method: "POST", token: token, access: nil, payload: ["id": id])
+    }
+
+    func addComment(token: String, photoID: String, body: String) async throws {
+        let _: PhotoComment = try await send(path: "/v1/photos/\(photoID)/comments", method: "POST", token: token, access: nil, payload: ["body": body])
+    }
+
+    func deleteComment(token: String, photoID: String, commentID: String) async throws {
+        try await sendEmpty(path: "/v1/photos/\(photoID)/comments/\(commentID)", method: "DELETE", token: token, access: nil, payload: nil)
+    }
+
+    func createRecovery(token: String) async throws -> String {
+        struct Body: Decodable { var code: String }
+        let body: Body = try await send(path: "/v1/me/recovery", method: "POST", token: token, access: nil, payload: nil)
+        return body.code
+    }
+
+    func recover(deviceID: String, code: String) async throws -> Account {
+        try await send(path: "/v1/recover", method: "POST", token: nil, access: nil, payload: [
+            "deviceId": deviceID, "code": code, "platform": "ios",
+        ])
+    }
+
+    func devices(token: String) async throws -> [DeviceInfo] {
+        struct Body: Decodable { var devices: [DeviceInfo] }
+        let body: Body = try await send(path: "/v1/me/devices", method: "GET", token: token, access: nil, payload: nil)
+        return body.devices
     }
 
     func revoke(token: String, shareID: String) async throws {
@@ -335,6 +396,7 @@ func apiMessage(_ error: Error) -> String {
         case "name_required": return "先登记一个名称。"
         case "apple_required": return "先用 Apple 登录，再分享照片。"
         case "not_friends": return "先成为好友，才能发消息。"
+        case "bad_code": return "恢复码不对，没有并进去。"
         default: return "请求没有完成。"
         }
     }

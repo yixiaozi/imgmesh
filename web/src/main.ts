@@ -1,11 +1,18 @@
 import {
   Api,
   fetchCiphertext,
+  addComment,
+  createRecovery,
+  deleteComment,
   loadAccount,
+  loadDevices,
+  loadFeed,
   loadUser,
   loadFriends,
   loadMessages,
+  markFeed,
   photoCards,
+  recover,
   register,
   requestFriend,
   respondFriend,
@@ -18,12 +25,15 @@ import {
   type Account,
   type Activity,
   type ActivityPerson,
+  type DeviceInfo,
   type DirectMessage,
+  type FeedItem,
   type PhotoCard,
   type PublicUser,
   type SocialUser,
 } from "./api";
 import { accessTag, aad, decode, decrypt, derive, encode, encrypt, randomBytes, sha256, type Manifest, type ManifestItem } from "./crypto";
+import { heicJPEG } from "./heic";
 import { zipStore } from "./zip";
 
 const app = document.querySelector<HTMLElement>("#app");
@@ -62,6 +72,12 @@ const state: {
   chatWith: string;
   messages: DirectMessage[];
   messageDraft: string;
+  feedOpen: boolean;
+  feed: FeedItem[];
+  feedUnread: number;
+  recoveryCode: string;
+  devices: DeviceInfo[];
+  commentDraft: string;
 } = {
   photos: [],
   cards: {},
@@ -86,10 +102,17 @@ const state: {
   chatWith: "",
   messages: [],
   messageDraft: "",
+  feedOpen: false,
+  feed: [],
+  feedUnread: 0,
+  recoveryCode: "",
+  devices: [],
+  commentDraft: "",
 };
 
 setInterval(() => void refreshShare(), 15000);
 setInterval(() => void refreshSocial(false), 8000);
+setInterval(() => void refreshFeed(false), 15000);
 
 document.addEventListener("keydown", (event) => {
   if (state.active < 0) return;
@@ -122,6 +145,7 @@ function render() {
         <label>找人 <input name="q" maxlength="24" value="${escapeHTML(state.peopleQuery)}" placeholder="名称、城市或联系方式" /></label>
         <button class="btn" type="submit">查找</button>
       </form>
+      <button class="btn" id="open-feed" type="button">${escapeHTML(feedLabel())}</button>
       <button class="btn" id="open-social" type="button">${escapeHTML(friendLabel())}</button>
     </header>
     <main class="viewer">
@@ -130,16 +154,20 @@ function render() {
       <p class="viewer-note">${escapeHTML(state.registeredNote)}</p>
       <p class="account-error">${escapeHTML(state.accountError)}</p>
       <section class="people" id="people"></section>
+      <section class="feed" id="feed"></section>
       <section class="social" id="social"></section>
       <div class="viewer-actions">
         <button class="btn btn-primary" id="save-all" type="button" ${state.photos.length && !state.adding ? "" : "disabled"}>全部下载</button>
         <label class="auto-save"><input id="auto-save" type="checkbox" ${state.autoSave ? "checked" : ""}/> 自动下载以后新增的照片</label>
-        ${state.owner ? `<label class="btn">添加照片<input id="add-photos" type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif" multiple hidden ${state.adding ? "disabled" : ""}/></label>` : ""}
+        <label class="btn">添加照片<input id="add-photos" type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif" multiple hidden ${state.adding ? "disabled" : ""}/></label>
+        <p class="viewer-note">拿着这条完整链接的人都可以加照片。不能撤销别人的链接，也不能改掉已经在里面的照片。</p>
       </div>
       <div class="grid" id="grid"></div>
       <section class="browser" id="browser"></section>
       <form class="profile" id="profile">
         <h2>我的资料</h2>
+        <p class="viewer-note">这台设备：${escapeHTML(state.account.user.deviceId)}。${state.devices.length > 1 ? `一共 ${state.devices.length} 台设备在这个名称下。` : "可以生成恢复码，把另一台设备并进来。"}</p>
+        ${state.recoveryCode ? `<p class="recovery-code">恢复码只显示这一次：<strong>${escapeHTML(state.recoveryCode)}</strong>。请记下来。服务器不保存明文。</p>` : `<button class="btn" id="make-recovery" type="button">生成恢复码</button>`}
         <label>名称 <input name="displayName" maxlength="24" value="${escapeHTML(user.displayName)}" /></label>
         <label>介绍 <input name="bio" maxlength="80" value="${escapeHTML(user.bio ?? "")}" /></label>
         <label>城市 <input name="city" maxlength="24" value="${escapeHTML(user.city ?? "")}" /></label>
@@ -154,6 +182,7 @@ function render() {
     const button = document.createElement("button");
     button.className = "tile-btn";
     button.type = "button";
+    button.setAttribute("aria-label", photo.name || "照片");
     button.innerHTML = photo.preview
       ? `<img alt="" src="${photo.preview}" />`
       : `<span class="tile-fallback">${escapeHTML(photo.name || "照片")}</span>`;
@@ -171,6 +200,7 @@ function render() {
   });
   renderBrowser(active);
   renderPeople();
+  renderFeed();
   renderSocial();
   document.querySelector("#save-all")?.addEventListener("click", () => void saveAll());
   document.querySelector<HTMLInputElement>("#auto-save")?.addEventListener("change", (event) => {
@@ -197,6 +227,12 @@ function render() {
     const data = new FormData(event.currentTarget as HTMLFormElement);
     void findPeople(String(data.get("q") ?? ""));
   });
+  document.querySelector("#open-feed")?.addEventListener("click", () => {
+    state.feedOpen = !state.feedOpen;
+    render();
+    if (state.feedOpen) void refreshFeed(true);
+  });
+  document.querySelector("#make-recovery")?.addEventListener("click", () => void makeRecovery());
   document.querySelector("#open-social")?.addEventListener("click", () => {
     state.socialOpen = !state.socialOpen;
     if (!state.socialOpen) state.chatWith = "";
@@ -226,7 +262,7 @@ function renderBrowser(active: Photo | undefined) {
     </aside>
   `;
   const stage = document.querySelector<HTMLElement>("#stage")!;
-  if (active.preview && active.mime !== "image/heic" && active.mime !== "image/heif") {
+  if (active.preview) {
     const img = document.createElement("img");
     img.alt = active.name || "照片";
     img.src = active.preview;
@@ -236,8 +272,8 @@ function renderBrowser(active: Photo | undefined) {
     box.className = "stage-fallback";
     box.textContent =
       active.mime === "image/heic" || active.mime === "image/heif"
-        ? "这张是 HEIC。浏览器放不了预览，可以下载原文件。"
-        : "可以下载原文件。";
+        ? `${active.name || "这张 HEIC"} 在浏览器里解不开，可以下载原文件。`
+        : active.name || "可以下载原文件。";
     stage.append(box);
   }
   const film = document.createElement("div");
@@ -266,6 +302,19 @@ function renderBrowser(active: Photo | undefined) {
   document.querySelector("#close-photo")?.addEventListener("click", () => {
     state.active = -1;
     render();
+  });
+  root.querySelector<HTMLFormElement>("#comment-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget as HTMLFormElement);
+    const card = active?.sha256 ? state.cards[active.sha256] : undefined;
+    void postComment(card?.id ?? "", String(data.get("body") ?? ""));
+  });
+  root.querySelectorAll<HTMLButtonElement>("[data-delete-comment]").forEach((button) => {
+    button.addEventListener("click", () => void removeComment(button.dataset.photo ?? "", button.dataset.deleteComment ?? ""));
+  });
+  const commentInput = root.querySelector<HTMLInputElement>('#comment-form input[name="body"]');
+  commentInput?.addEventListener("input", () => {
+    state.commentDraft = commentInput.value;
   });
   root.querySelector<HTMLButtonElement>("[data-like]")?.addEventListener("click", (event) => {
     const button = event.currentTarget as HTMLButtonElement;
@@ -315,11 +364,57 @@ function cardBody(card: PhotoCard | undefined): string {
         ? card.likedBy.map((person) => `<li>${personButton(person.id, person.displayName)}</li>`).join("")
         : "<li>还没有人点赞。</li>"
     }</ul>
+    <h3>留言</h3>
+    <ul>${
+      card.comments?.length
+        ? card.comments
+            .map(
+              (comment) =>
+                `<li>${escapeHTML(comment.displayName)}：${escapeHTML(comment.body)}${
+                  comment.mine ? ` <button type="button" class="btn" data-delete-comment="${escapeHTML(comment.id)}" data-photo="${escapeHTML(card.id)}">删除</button>` : ""
+                }</li>`,
+            )
+            .join("")
+        : "<li>还没有留言。</li>"
+    }</ul>
+    <form class="composer" id="comment-form">
+      <input name="body" maxlength="200" value="${escapeHTML(state.commentDraft)}" placeholder="写一句，1 到 200 字" />
+      <button class="btn" type="submit">留言</button>
+    </form>
   `;
 }
 
 function personButton(id: string, name: string): string {
   return `<button type="button" class="person-link" data-user="${escapeHTML(id)}">${escapeHTML(name || "未命名")}</button>`;
+}
+
+function feedLabel(): string {
+  return state.feedUnread ? `最新动态 · ${state.feedUnread}` : "最新动态";
+}
+
+function renderFeed() {
+  const root = document.querySelector<HTMLElement>("#feed");
+  if (!root) return;
+  if (!state.feedOpen) {
+    root.hidden = true;
+    root.innerHTML = "";
+    return;
+  }
+  root.hidden = false;
+  const rows = state.feed.length
+    ? state.feed
+        .map((item) => {
+          const when = item.at ? new Date(item.at).toLocaleString() : "";
+          return `<li class="${item.read ? "" : "unread"}"><button type="button" class="person-link" data-feed="${escapeHTML(item.id)}">${escapeHTML(item.name)} ${escapeHTML(item.text)}</button> <span class="viewer-note">${escapeHTML(when)}</span>${
+            item.summary ? `<p>${escapeHTML(item.summary)}</p>` : ""
+          }</li>`;
+        })
+        .join("")
+    : "<li>还没有和你有关的新动态。</li>";
+  root.innerHTML = `<h2>最新动态</h2><p class="viewer-note">只显示和你有关的事：谁打开或保存了你的分享、谁往你的链接加了照片、谁赞了你的照片、谁想加好友、好友发来的消息。点一条就标成已读。</p><ul>${rows}</ul>`;
+  root.querySelectorAll<HTMLButtonElement>("[data-feed]").forEach((button) => {
+    button.addEventListener("click", () => void openFeedItem(button.dataset.feed ?? ""));
+  });
 }
 
 function friendLabel(): string {
@@ -559,6 +654,10 @@ function renderRegister() {
         <button class="btn btn-primary" type="submit" ${broken ? "disabled" : ""}>注册</button>
         <p class="account-error">${escapeHTML(state.accountError)}</p>
       </form>
+      <form class="account" id="recover">
+        <label>已有恢复码 <input name="code" maxlength="32" placeholder="在原来的设备上生成" ${broken ? "disabled" : ""} /></label>
+        <button class="btn" type="submit" ${broken ? "disabled" : ""}>并入原来的名称</button>
+      </form>
     </main>
   `;
   const input = document.querySelector<HTMLInputElement>('input[name="displayName"]');
@@ -569,6 +668,11 @@ function renderRegister() {
     event.preventDefault();
     const data = new FormData(event.currentTarget as HTMLFormElement);
     void signUp(String(data.get("displayName") ?? ""));
+  });
+  document.querySelector<HTMLFormElement>("#recover")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget as HTMLFormElement);
+    void useRecovery(String(data.get("code") ?? ""));
   });
 }
 
@@ -613,6 +717,12 @@ async function start() {
   }
   await openShare();
   void refreshSocial(false);
+  void refreshFeed(false);
+  void loadDevices(state.account.token).then((devices) => {
+    state.devices = devices;
+    const typing = document.activeElement instanceof HTMLInputElement || document.activeElement instanceof HTMLTextAreaElement;
+    if (!typing) render();
+  }).catch(() => undefined);
 }
 
 async function signUp(name: string) {
@@ -627,6 +737,7 @@ async function signUp(name: string) {
     render();
     await openShare();
     void refreshSocial(false);
+    void refreshFeed(false);
   } catch (err) {
     state.accountError = accountMessage(err);
     renderRegister();
@@ -750,7 +861,8 @@ function accountMessage(err: unknown): string {
   const code = err instanceof Error ? err.message : "";
   if (code === "name_taken") return "这个名称已经有人用了，换一个。";
   if (code === "not_friends") return "先成为好友，才能发消息。";
-  if (code === "bad_request") return "名称用 1 到 24 个字，介绍、城市和联系方式不要太长。";
+  if (code === "bad_code") return "恢复码不对，没有并进去。";
+  if (code === "bad_request") return "名称用 1 到 24 个字，介绍、城市和联系方式不要太长。留言是 1 到 200 个字。";
   return "没有完成，可以再试一次。";
 }
 
@@ -762,6 +874,84 @@ function message(err: unknown): string {
   if (code === "not_found") return "没有找到这份分享。";
   if (code === "name_required") return "先登记一个名称。";
   return "暂时打不开这份分享。";
+}
+
+async function refreshFeed(force: boolean) {
+  if (!state.account) return;
+  try {
+    const feed = await loadFeed(state.account.token);
+    state.feed = feed.items;
+    state.feedUnread = feed.unread;
+  } catch (err) {
+    if (force) state.accountError = accountMessage(err);
+  }
+  const typing = document.activeElement instanceof HTMLInputElement || document.activeElement instanceof HTMLTextAreaElement;
+  if (state.feedOpen && (force || !typing)) render();
+  else {
+    const button = document.querySelector("#open-feed");
+    if (button) button.textContent = feedLabel();
+  }
+}
+
+async function openFeedItem(id: string) {
+  if (!state.account || !id) return;
+  await markFeed(state.account.token, id).catch(() => undefined);
+  await refreshFeed(true);
+}
+
+async function makeRecovery() {
+  if (!state.account) return;
+  try {
+    state.recoveryCode = await createRecovery(state.account.token);
+    state.accountError = "";
+    render();
+  } catch (err) {
+    state.accountError = accountMessage(err);
+    render();
+  }
+}
+
+async function useRecovery(code: string) {
+  state.accountError = "";
+  try {
+    const account = await recover(code);
+    state.account = account;
+    state.registeredNote = `这台设备已经并入「${account.user.displayName}」。好友、消息和动态是同一份。`;
+    state.devices = await loadDevices(account.token).catch(() => []);
+    render();
+    await openShare();
+    void refreshSocial(false);
+    void refreshFeed(false);
+  } catch (err) {
+    state.accountError = accountMessage(err);
+    renderRegister();
+  }
+}
+
+async function postComment(photoID: string, body: string) {
+  if (!state.account || !photoID) return;
+  try {
+    await addComment(state.account.token, photoID, body);
+    state.commentDraft = "";
+    state.accountError = "";
+    await refreshCards();
+    render();
+  } catch (err) {
+    state.accountError = accountMessage(err);
+    render();
+  }
+}
+
+async function removeComment(photoID: string, commentID: string) {
+  if (!state.account || !photoID || !commentID) return;
+  try {
+    await deleteComment(state.account.token, photoID, commentID);
+    await refreshCards();
+    render();
+  } catch (err) {
+    state.accountError = accountMessage(err);
+    render();
+  }
 }
 
 async function loadPreview(index: number, item: ManifestItem) {
@@ -793,12 +983,25 @@ async function originalBytes(item: ManifestItem): Promise<Uint8Array> {
 
 async function showOriginal(index: number) {
   const item = state.photos[index];
-  if (!item || item.mime === "image/heic" || item.mime === "image/heif") return;
+  if (!item) return;
   try {
     const bytes = await originalBytes(item);
     const digest = await sha256(bytes);
     item.sha256 = digest;
-    item.preview = URL.createObjectURL(new Blob([bytes as BlobPart], { type: item.mime }));
+    let preview = bytes;
+    let type = item.mime || "application/octet-stream";
+    if (item.mime === "image/heic" || item.mime === "image/heif") {
+      const jpeg = await heicJPEG(bytes);
+      if (!jpeg) {
+        state.status = `${item.name || "这张 HEIC"} 在浏览器里解不开，可以下载原文件。`;
+        await refreshCards();
+        render();
+        return;
+      }
+      preview = jpeg;
+      type = "image/jpeg";
+    }
+    item.preview = URL.createObjectURL(new Blob([preview as BlobPart], { type }));
     await refreshCards();
     if (state.active === index) render();
   } catch {
@@ -996,6 +1199,7 @@ async function addFiles(files: File[]) {
     await state.api.claim(claims).catch(() => undefined);
     state.adding = false;
     state.status = "已经加进原来的链接。选过自动下载的人再打开时会收到新照片，后来打开的人也可以直接下载。";
+    render();
     await refreshShare();
     if (state.photos.length < items.length) {
       state.manifest = { v: 1, title: state.manifest.title, items };
@@ -1023,9 +1227,16 @@ function allowedMime(type: string, name: string): string {
 }
 
 async function thumbJPEG(plain: Uint8Array, mime: string): Promise<Uint8Array | null> {
-  if (mime === "image/heic" || mime === "image/heif") return null;
+  let source = plain;
+  let sourceType = mime;
+  if (mime === "image/heic" || mime === "image/heif") {
+    const jpeg = await heicJPEG(plain);
+    if (!jpeg) return null;
+    source = jpeg;
+    sourceType = "image/jpeg";
+  }
   try {
-    const bitmap = await createImageBitmap(new Blob([plain as BlobPart], { type: mime }));
+    const bitmap = await createImageBitmap(new Blob([source as BlobPart], { type: sourceType }));
     const scale = 480 / Math.max(bitmap.width, bitmap.height);
     const width = Math.max(1, Math.round(bitmap.width * Math.min(1, scale)));
     const height = Math.max(1, Math.round(bitmap.height * Math.min(1, scale)));

@@ -40,6 +40,7 @@ var (
 	ErrGone         = errors.New("gone")
 	ErrBad          = errors.New("bad request")
 	ErrNotFriends   = errors.New("not friends")
+	ErrBadCode      = errors.New("bad code")
 )
 
 type Store struct {
@@ -134,6 +135,16 @@ type PhotoCard struct {
 	LikeCount int
 	Liked     bool
 	LikedBy   []PhotoLike
+	Comments  []PhotoComment
+}
+
+type PhotoComment struct {
+	ID          string
+	PhotoID     string
+	UserID      string
+	DisplayName string
+	Body        string
+	CreatedAt   time.Time
 }
 
 type SocialUser struct {
@@ -199,7 +210,7 @@ func (s *Store) Close() { s.pool.Close() }
 
 func (s *Store) Reset(ctx context.Context) error {
 	_, err := s.pool.Exec(ctx, `
-		TRUNCATE message_reads, messages, friendships, photo_likes, follows, photo_people, photo_cards, holdings, events, objects, shares, sessions, devices, users CASCADE;
+		TRUNCATE activity_reads, photo_comments, message_reads, messages, friendships, photo_likes, follows, photo_people, photo_cards, holdings, events, objects, shares, sessions, devices, users CASCADE;
 		UPDATE usage_totals SET photos_transferred = 0
 	`)
 	return err
@@ -372,7 +383,10 @@ func (s *Store) Profile(ctx context.Context, userID string) (Profile, error) {
 	err := s.pool.QueryRow(ctx, `
 		SELECT u.id::text, u.display_name, u.bio, u.city, u.contact, u.apple_sub IS NOT NULL,
 		       COALESCE(d.id, ''), COALESCE(d.platform, '')
-		FROM users u LEFT JOIN devices d ON d.user_id = u.id
+		FROM users u
+		LEFT JOIN LATERAL (
+			SELECT id, platform FROM devices WHERE user_id = u.id ORDER BY created_at DESC LIMIT 1
+		) d ON true
 		WHERE u.id=$1
 	`, userID).Scan(&p.ID, &p.DisplayName, &p.Bio, &p.City, &p.Contact, &p.AppleLinked, &p.DeviceID, &p.Platform)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -523,12 +537,58 @@ func (s *Store) PhotoCards(ctx context.Context, ids []string, viewerID string) (
 		if people == nil {
 			people = []PhotoMember{}
 		}
-		out = append(out, PhotoCard{ID: photoID, People: people, LikedBy: []PhotoLike{}})
+		out = append(out, PhotoCard{ID: photoID, People: people, LikedBy: []PhotoLike{}, Comments: []PhotoComment{}})
 	}
 	if err := s.attachLikes(ctx, out, viewerID); err != nil {
 		return nil, err
 	}
+	if err := s.attachComments(ctx, out); err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+func (s *Store) attachComments(ctx context.Context, cards []PhotoCard) error {
+	if len(cards) == 0 {
+		return nil
+	}
+	ids := make([]string, len(cards))
+	for i, card := range cards {
+		ids[i] = card.ID
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT c.photo_id, c.id::text, u.id::text, u.display_name, c.body, c.created_at
+		FROM photo_comments c
+		JOIN users u ON u.id = c.user_id
+		WHERE c.photo_id = ANY($1::text[])
+		ORDER BY c.created_at
+	`, ids)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	byID := map[string][]PhotoComment{}
+	for rows.Next() {
+		var photoID string
+		var comment PhotoComment
+		if err := rows.Scan(&photoID, &comment.ID, &comment.UserID, &comment.DisplayName, &comment.Body, &comment.CreatedAt); err != nil {
+			return err
+		}
+		comment.PhotoID = photoID
+		list := byID[photoID]
+		if len(list) < 50 {
+			byID[photoID] = append(list, comment)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for i := range cards {
+		if comments := byID[cards[i].ID]; comments != nil {
+			cards[i].Comments = comments
+		}
+	}
+	return nil
 }
 
 func (s *Store) attachLikes(ctx context.Context, cards []PhotoCard, viewerID string) error {
@@ -736,8 +796,7 @@ func (sh Share) Unavailable() error {
 }
 
 func (s *Store) Reserve(ctx context.Context, ownerID string, shareID []byte, objs []NewObject) ([]Object, []string, error) {
-	uid, err := uuid.Parse(ownerID)
-	if err != nil {
+	if _, err := uuid.Parse(ownerID); err != nil {
 		return nil, nil, ErrBad
 	}
 	tx, err := s.pool.Begin(ctx)
@@ -746,17 +805,18 @@ func (s *Store) Reserve(ctx context.Context, ownerID string, shareID []byte, obj
 	}
 	defer tx.Rollback(ctx)
 
-	if _, err := tx.Exec(ctx, `SELECT id FROM users WHERE id=$1 FOR UPDATE`, uid); err != nil {
-		return nil, nil, err
-	}
 	sh, err := scanShare(ctx, tx, shareID)
 	if err != nil {
 		return nil, nil, err
 	}
-	if sh.OwnerID != ownerID {
-		return nil, nil, ErrNotFound
-	}
 	if err := sh.Unavailable(); err != nil {
+		return nil, nil, err
+	}
+	owner, err := uuid.Parse(sh.OwnerID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if _, err := tx.Exec(ctx, `SELECT id FROM users WHERE id=$1 FOR UPDATE`, owner); err != nil {
 		return nil, nil, err
 	}
 
@@ -821,7 +881,7 @@ func (s *Store) Reserve(ctx context.Context, ownerID string, shareID []byte, obj
 		FROM objects o JOIN shares s ON s.id = o.share_id
 		WHERE s.owner_id=$1 AND s.revoked_at IS NULL AND o.kind='original'
 		  AND (o.status='ready' OR (o.status='pending' AND o.created_at >= $2))
-	`, uid, cutoff).Scan(&used); err != nil {
+	`, owner, cutoff).Scan(&used); err != nil {
 		return nil, nil, err
 	}
 
@@ -996,8 +1056,8 @@ func (s *Store) Finish(ctx context.Context, ownerID string, shareID, manifestID,
 	if err != nil {
 		return err
 	}
-	if sh.OwnerID != ownerID {
-		return ErrNotFound
+	if _, err := uuid.Parse(ownerID); err != nil {
+		return ErrBad
 	}
 	if err := sh.Unavailable(); err != nil {
 		return err

@@ -40,6 +40,15 @@ export interface PhotoHolder extends NamedUser {
   from?: NamedUser;
 }
 
+export interface PhotoComment {
+  id: string;
+  userId: string;
+  displayName: string;
+  body: string;
+  createdAt: string;
+  mine: boolean;
+}
+
 export interface PhotoCard {
   id: string;
   sharedBy: NamedUser[];
@@ -48,6 +57,22 @@ export interface PhotoCard {
   likeCount: number;
   liked: boolean;
   likedBy: NamedUser[];
+  comments: PhotoComment[];
+}
+
+export interface FeedItem {
+  id: string;
+  name: string;
+  text: string;
+  summary: string;
+  at: string;
+  read: boolean;
+}
+
+export interface DeviceInfo {
+  id: string;
+  platform: string;
+  createdAt: string;
 }
 
 export interface SocialUser extends PublicUser {
@@ -238,6 +263,65 @@ export async function sendMessage(token: string, to: string, body: string): Prom
   });
   if (!res.ok) throw new Error(await readError(res));
   return (await res.json()) as DirectMessage;
+}
+
+export async function loadFeed(token: string): Promise<{ unread: number; items: FeedItem[] }> {
+  const res = await fetch("/v1/activity", { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error(await readError(res));
+  return (await res.json()) as { unread: number; items: FeedItem[] };
+}
+
+export async function markFeed(token: string, id: string): Promise<void> {
+  const res = await fetch("/v1/activity/read", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ id }),
+  });
+  if (!res.ok) throw new Error(await readError(res));
+}
+
+export async function addComment(token: string, photoID: string, body: string): Promise<PhotoComment> {
+  const res = await fetch(`/v1/photos/${photoID}/comments`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ body }),
+  });
+  if (!res.ok) throw new Error(await readError(res));
+  return (await res.json()) as PhotoComment;
+}
+
+export async function deleteComment(token: string, photoID: string, commentID: string): Promise<void> {
+  const res = await fetch(`/v1/photos/${photoID}/comments/${commentID}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(await readError(res));
+}
+
+export async function createRecovery(token: string): Promise<string> {
+  const res = await fetch("/v1/me/recovery", { method: "POST", headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error(await readError(res));
+  const body = (await res.json()) as { code: string };
+  return body.code;
+}
+
+export async function recover(code: string): Promise<Account> {
+  const res = await fetch("/v1/recover", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ deviceId: deviceId(), code, platform: "web" }),
+  });
+  if (!res.ok) throw new Error(await readError(res));
+  const account = (await res.json()) as Account;
+  saveAccount(account);
+  return account;
+}
+
+export async function loadDevices(token: string): Promise<DeviceInfo[]> {
+  const res = await fetch("/v1/me/devices", { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error(await readError(res));
+  const body = (await res.json()) as { devices: DeviceInfo[] };
+  return body.devices;
 }
 
 export async function photoCards(token: string, ids: string[]): Promise<PhotoCard[]> {

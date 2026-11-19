@@ -25,6 +25,10 @@ final class AppModel: ObservableObject {
     @Published var chatPeer: APIClient.PublicUser?
     @Published var messages: [APIClient.DirectMessage] = []
     @Published var messageDraft = ""
+    @Published var feed: [APIClient.FeedItem] = []
+    @Published var feedUnread = 0
+    @Published var devices: [APIClient.DeviceInfo] = []
+    @Published var recoveryCode = ""
 
     let api = APIClient()
     private var deviceID = KeychainStore.deviceID()
@@ -47,6 +51,8 @@ final class AppModel: ObservableObject {
         deviceID = KeychainStore.deviceID()
         if session != nil {
             await loadFriends()
+            await refreshFeed()
+            await loadDevices()
             return
         }
         do {
@@ -322,7 +328,7 @@ final class AppModel: ObservableObject {
             objects.append(objectPayload(id: manifestText, kind: "manifest", plain: manifestPlain.count, cipher: blobs[manifestText]?.count ?? 0))
 
             status = "正在上传"
-            let plans = try await api.reserve(token: session.token, shareID: shareIDText, objects: objects)
+            let plans = try await api.reserve(token: session.token, shareID: shareIDText, access: tag, objects: objects)
             var completed: [[String: Any]] = []
             for plan in plans {
                 guard let payload = blobs[plan.id] else { throw APIError.transport("上传计划对不上。") }
@@ -349,6 +355,7 @@ final class AppModel: ObservableObject {
             try await api.complete(
                 token: session.token,
                 shareID: shareIDText,
+                access: tag,
                 objects: completed,
                 manifestID: manifestText,
                 nonce: ImgmeshSeal.encode(manifestNonce)
@@ -380,10 +387,6 @@ final class AppModel: ObservableObject {
     func addPhotos(providers: [NSItemProvider], to share: LocalShare) async {
         guard let session else {
             errorMessage = "先登记这台设备的名称。"
-            return
-        }
-        guard session.appleLinked else {
-            errorMessage = "先用 Apple 登录，再添加照片。"
             return
         }
         guard !providers.isEmpty else { return }
@@ -468,7 +471,7 @@ final class AppModel: ObservableObject {
             }
             objects.append(objectPayload(id: manifestText, kind: "manifest", plain: manifestPlain.count, cipher: blobs[manifestText]?.count ?? 0))
             status = "正在上传"
-            let plans = try await api.reserve(token: session.token, shareID: share.id, objects: objects)
+            let plans = try await api.reserve(token: session.token, shareID: share.id, access: tag, objects: objects)
             var completed: [[String: Any]] = []
             for plan in plans {
                 guard let payload = blobs[plan.id] else { throw APIError.transport("上传计划对不上。") }
@@ -490,6 +493,7 @@ final class AppModel: ObservableObject {
             try await api.complete(
                 token: session.token,
                 shareID: share.id,
+                access: tag,
                 objects: completed,
                 manifestID: manifestText,
                 nonce: ImgmeshSeal.encode(manifestNonce)
@@ -717,6 +721,78 @@ final class AppModel: ObservableObject {
             ))
         }
         return images
+    }
+
+    func refreshFeed() async {
+        guard let token = session?.token else { return }
+        do {
+            let result = try await api.feed(token: token)
+            feed = result.items
+            feedUnread = result.unread
+        } catch {
+            errorMessage = apiMessage(error)
+        }
+    }
+
+    func openFeed(_ item: APIClient.FeedItem) async {
+        guard let token = session?.token else { return }
+        try? await api.markFeed(token: token, id: item.id)
+        await refreshFeed()
+    }
+
+    func loadDevices() async {
+        guard let token = session?.token else { return }
+        devices = (try? await api.devices(token: token)) ?? devices
+    }
+
+    func makeRecovery() async {
+        guard let token = session?.token else { return }
+        do {
+            recoveryCode = try await api.createRecovery(token: token)
+            status = "恢复码只显示这一次。记下来之后，另一台设备输入它就会并入这个名称。"
+            errorMessage = ""
+        } catch {
+            errorMessage = apiMessage(error)
+        }
+    }
+
+    func useRecovery(_ code: String) async {
+        do {
+            let account = try await api.recover(deviceID: deviceID, code: code)
+            store(account)
+            status = "这台设备已经并入「\(account.user.displayName)」。"
+            errorMessage = ""
+            await loadFriends()
+            await refreshFeed()
+            await loadDevices()
+        } catch {
+            errorMessage = apiMessage(error)
+        }
+    }
+
+    func addComment(photoID: String, body: String) async {
+        guard let token = session?.token else { return }
+        do {
+            try await api.addComment(token: token, photoID: photoID, body: body)
+            errorMessage = ""
+            if let share = shares.first(where: { $0.id == selectedID }) {
+                await loadGallery(share)
+            }
+        } catch {
+            errorMessage = apiMessage(error)
+        }
+    }
+
+    func deleteComment(photoID: String, commentID: String) async {
+        guard let token = session?.token else { return }
+        do {
+            try await api.deleteComment(token: token, photoID: photoID, commentID: commentID)
+            if let share = shares.first(where: { $0.id == selectedID }) {
+                await loadGallery(share)
+            }
+        } catch {
+            errorMessage = apiMessage(error)
+        }
     }
 
     private func objectPayload(id: String, kind: String, plain: Int, cipher: Int) -> [String: Any] {

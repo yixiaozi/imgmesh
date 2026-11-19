@@ -437,3 +437,22 @@ body {
   flex-wrap: wrap;
   gap: 0.4rem;
 }
+
+.feed,
+.recovery-code {
+  margin-top: 1rem;
+}
+
+.feed[hidden] {
+  display: none;
+}
+
+.feed .unread button {
+  font-weight: 700;
+}
+
+.recovery-code {
+  padding: 0.6rem 0.8rem;
+  background: rgba(14, 107, 110, 0.1);
+  border-radius: 0.6rem;
+}

@@ -8,6 +8,7 @@ struct RootView: View {
     @State private var showPicker = false
     @State private var pasted = ""
     @State private var path: [String] = []
+    @State private var recoveryDraft = ""
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -20,6 +21,9 @@ struct RootView: View {
                         TextField("名称，例如小林", text: $model.draftName)
                         Button("注册") { Task { await model.register() } }
                             .disabled(model.draftName.trimmingCharacters(in: .whitespaces).isEmpty)
+                        TextField("已有恢复码", text: $recoveryDraft)
+                        Button("并入原来的名称") { Task { await model.useRecovery(recoveryDraft) } }
+                            .disabled(recoveryDraft.trimmingCharacters(in: .whitespaces).isEmpty)
                     } else {
                         Text(model.session?.displayName ?? "")
                         TextField("名称", text: $model.draftName)
@@ -27,6 +31,20 @@ struct RootView: View {
                         TextField("城市", text: $model.city)
                         TextField("联系方式", text: $model.contact)
                         Button("保存资料") { Task { await model.saveProfile() } }
+                        if model.devices.count > 1 {
+                            Text("这个名称下有 \(model.devices.count) 台设备。")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                        if model.recoveryCode.isEmpty {
+                            Button("生成恢复码") { Task { await model.makeRecovery() } }
+                        } else {
+                            Text("恢复码只显示这一次：\(model.recoveryCode)")
+                                .textSelection(.enabled)
+                        }
+                        TextField("另一台设备的恢复码", text: $recoveryDraft)
+                        Button("并入原来的名称") { Task { await model.useRecovery(recoveryDraft) } }
+                            .disabled(recoveryDraft.trimmingCharacters(in: .whitespaces).isEmpty)
                         if model.session?.appleLinked == true {
                             Text("已连接 Apple，可以分享和撤销。")
                                 .font(.footnote)
@@ -44,6 +62,25 @@ struct RootView: View {
                             Text("分享和撤销需要 Apple 登录。查看和保存只用上面的名称。")
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                Section("最新动态") {
+                    if model.feed.isEmpty {
+                        Text(model.feedUnread == 0 ? "还没有和你有关的新动态。" : "有 \(model.feedUnread) 条还没看。")
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(model.feed) { item in
+                        Button {
+                            Task { await model.openFeed(item) }
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("\(item.name) \(item.text)")
+                                    .fontWeight(item.read ? .regular : .semibold)
+                                if !item.summary.isEmpty {
+                                    Text(item.summary).font(.footnote).foregroundStyle(.secondary)
+                                }
+                            }
                         }
                     }
                 }
@@ -218,9 +255,9 @@ struct GalleryView: View {
                     set: { value in Task { await model.setAutoSave(live, value) } }
                 ))
                 .disabled(model.session == nil)
+                Button("添加照片") { adding = true }
+                    .disabled(model.busy || model.session == nil)
                 if live.role == "sent" {
-                    Button("添加照片") { adding = true }
-                        .disabled(model.busy || model.session?.appleLinked != true)
                     Button("撤销链接", role: .destructive) { Task { await model.revoke(live) } }
                 }
                 Button("从 imgmesh 移除", role: .destructive) { Task { await model.remove(live) } }
@@ -312,6 +349,7 @@ struct PhotoBrowser: View {
     let photo: AppModel.GalleryPhoto
     let share: LocalShare
     @State private var index = 0
+    @State private var commentDraft = ""
 
     private var current: AppModel.GalleryPhoto {
         model.gallery.indices.contains(index) ? model.gallery[index] : photo
@@ -406,6 +444,26 @@ struct PhotoBrowser: View {
                 Text("谁点了赞").font(.headline)
                 Text(card.likedBy.isEmpty ? "还没有人点赞。" : card.likedBy.map(\.displayName).joined(separator: "、"))
                     .foregroundStyle(card.likedBy.isEmpty ? .secondary : .primary)
+                Text("留言").font(.headline)
+                if card.comments.isEmpty {
+                    Text("还没有留言。").foregroundStyle(.secondary)
+                }
+                ForEach(card.comments) { comment in
+                    HStack {
+                        Text("\(comment.displayName)：\(comment.body)")
+                        if comment.mine {
+                            Button("删除") { Task { await model.deleteComment(photoID: card.id, commentID: comment.id) } }
+                                .font(.footnote)
+                        }
+                    }
+                }
+                TextField("写一句，1 到 200 字", text: $commentDraft)
+                Button("留言") {
+                    let text = commentDraft
+                    commentDraft = ""
+                    Task { await model.addComment(photoID: card.id, body: text) }
+                }
+                .disabled(commentDraft.trimmingCharacters(in: .whitespaces).isEmpty)
             } else {
                 Text("这张照片还没有身份证记录。").foregroundStyle(.secondary)
             }

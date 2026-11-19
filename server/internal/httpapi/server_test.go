@@ -522,8 +522,8 @@ func TestPhotoIdentityAndPeople(t *testing.T) {
 	res = do(t, client, http.MethodPost, base+"/v1/shares/"+shareText+"/photos", viewer.Token, accessText, map[string]any{
 		"items": []map[string]string{{"sha256": one, "kind": "shared"}},
 	})
-	if res.StatusCode != 403 {
-		t.Fatalf("non-owner share claim %d", res.StatusCode)
+	if res.StatusCode != 204 {
+		t.Fatalf("someone with the link can record that they added a photo %d %s", res.StatusCode, readBody(res))
 	}
 	res.Body.Close()
 	res = do(t, client, http.MethodPost, base+"/v1/shares/"+shareText+"/photos", viewer.Token, accessText, map[string]any{
@@ -1066,6 +1066,281 @@ func registerNamed(t *testing.T, client *http.Client, base, device, name string)
 	json.NewDecoder(res.Body).Decode(&body)
 	res.Body.Close()
 	return namedUser{Token: body.Token, ID: body.User.ID}
+}
+
+func TestAppendCommentsFeedAndRecovery(t *testing.T) {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		dsn = "postgres:///imgmesh_test?host=/var/run/postgresql"
+	}
+	ctx := context.Background()
+	st, err := store.Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(st.Close)
+	if err := st.Reset(ctx); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	disk, err := blob.NewDisk(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := "http://" + ln.Addr().String()
+	api := &Server{
+		Store: st, Disk: disk, Secret: bytes.Repeat([]byte{5}, 32), PublicBaseURL: base,
+		Apple: fakeApple{"good-token": "sub-people"}, MultipartThreshold: 1 << 20, PartSize: 1 << 20, DiskFreeMin: 1,
+	}
+	srv := &http.Server{Handler: api.Handler()}
+	go srv.Serve(ln)
+	t.Cleanup(func() { srv.Close() })
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	owner := registerNamed(t, client, base, "people-owner-device01", "海边")
+	res := do(t, client, http.MethodPost, base+"/v1/auth/apple", owner.Token, "", map[string]string{
+		"identityToken": "good-token", "displayName": "海边",
+	})
+	if res.StatusCode != 200 {
+		t.Fatalf("apple %d %s", res.StatusCode, readBody(res))
+	}
+	peer := registerNamed(t, client, base, "people-peer-device001", "旅伴")
+	master := bytes.Repeat([]byte{0x51}, 32)
+	shareID := bytes.Repeat([]byte{0x52}, 16)
+	access, err := seal.AccessTag(master, shareID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shareText := id.Encode(shareID)
+	accessText := id.Encode(access)
+	res = do(t, client, http.MethodPost, base+"/v1/shares", owner.Token, "", map[string]string{
+		"id": shareText, "accessTag": accessText,
+	})
+	if res.StatusCode != 200 {
+		t.Fatalf("share %d %s", res.StatusCode, readBody(res))
+	}
+
+	upload := func(token, accessHeader, plainText string, objectFill, manifestFill byte) {
+		t.Helper()
+		plain := []byte(plainText)
+		objectID := bytes.Repeat([]byte{objectFill}, 16)
+		nonce := bytes.Repeat([]byte{0x11}, 12)
+		fileKey, _ := seal.Derive(master, shareID, seal.InfoFile)
+		aad, _ := seal.AAD(shareID, objectID)
+		ct, err := seal.Encrypt(fileKey, nonce, aad, plain)
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifestBody := []byte(`{"v":1}`)
+		manifestID := bytes.Repeat([]byte{manifestFill}, 16)
+		manifestNonce := bytes.Repeat([]byte{0x22}, 12)
+		manifestKey, _ := seal.Derive(master, shareID, seal.InfoManifest)
+		manifestAAD, _ := seal.AAD(shareID, manifestID)
+		manifestCT, err := seal.Encrypt(manifestKey, manifestNonce, manifestAAD, manifestBody)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res = do(t, client, http.MethodPost, base+"/v1/shares/"+shareText+"/uploads", token, accessHeader, map[string]any{
+			"objects": []any{
+				map[string]any{"id": id.Encode(objectID), "kind": "original", "plaintextBytes": len(plain), "ciphertextBytes": len(ct)},
+				map[string]any{"id": id.Encode(manifestID), "kind": "manifest", "plaintextBytes": len(manifestBody), "ciphertextBytes": len(manifestCT)},
+			},
+		})
+		if res.StatusCode != 200 {
+			t.Fatalf("uploads %d %s", res.StatusCode, readBody(res))
+		}
+		var planned struct {
+			Uploads []struct {
+				ID    string `json:"id"`
+				Parts []struct {
+					URL string `json:"url"`
+				} `json:"parts"`
+			} `json:"uploads"`
+		}
+		json.NewDecoder(res.Body).Decode(&planned)
+		res.Body.Close()
+		blobs := map[string][]byte{id.Encode(objectID): ct, id.Encode(manifestID): manifestCT}
+		objects := []any{}
+		for _, up := range planned.Uploads {
+			req, _ := http.NewRequest(http.MethodPut, up.Parts[0].URL, bytes.NewReader(blobs[up.ID]))
+			putRes, err := client.Do(req)
+			if err != nil || putRes.StatusCode != 200 {
+				t.Fatalf("put %v", err)
+			}
+			etag := putRes.Header.Get("ETag")
+			putRes.Body.Close()
+			objects = append(objects, map[string]any{
+				"id": up.ID, "byteSize": len(blobs[up.ID]), "parts": []map[string]any{{"partNumber": 0, "etag": etag}},
+			})
+		}
+		res = do(t, client, http.MethodPost, base+"/v1/shares/"+shareText+"/uploads/complete", token, accessHeader, map[string]any{
+			"objects": objects, "manifestObjectId": id.Encode(manifestID), "manifestNonce": id.Encode(manifestNonce),
+		})
+		if res.StatusCode != 204 {
+			t.Fatalf("complete %d %s", res.StatusCode, readBody(res))
+		}
+	}
+	upload(owner.Token, "", "owner-photo-bytes-owner-photo", 0x61, 0x62)
+	res = do(t, client, http.MethodPost, base+"/v1/shares/"+shareText+"/uploads", peer.Token, "", map[string]any{
+		"objects": []any{map[string]any{"id": id.Encode(bytes.Repeat([]byte{0x63}, 16)), "kind": "original", "plaintextBytes": 8, "ciphertextBytes": 24}},
+	})
+	if res.StatusCode != 401 {
+		t.Fatalf("append without key %d %s", res.StatusCode, readBody(res))
+	}
+	upload(peer.Token, accessText, "peer-photo-bytes-peer-photo00", 0x63, 0x64)
+	res = do(t, client, http.MethodGet, base+"/v1/shares/"+shareText, owner.Token, accessText, nil)
+	if !bytes.Contains(readBody(res), []byte(`"photoCount":2`)) {
+		t.Fatal("count should include the photo added by the other person")
+	}
+	photo := fingerprint("peer-photo-bytes-peer-photo00")
+	res = do(t, client, http.MethodPost, base+"/v1/shares/"+shareText+"/photos", peer.Token, accessText, map[string]any{
+		"items": []map[string]string{{"sha256": photo, "kind": "shared"}},
+	})
+	if res.StatusCode != 204 {
+		t.Fatalf("claim %d %s", res.StatusCode, readBody(res))
+	}
+	res = do(t, client, http.MethodGet, base+"/v1/photos?id="+photo, owner.Token, "", nil)
+	if !bytes.Contains(readBody(res), []byte("旅伴")) {
+		t.Fatal("identity card should name the person who added the photo")
+	}
+	res = do(t, client, http.MethodDelete, base+"/v1/shares/"+shareText, peer.Token, "", nil)
+	if res.StatusCode != 404 {
+		t.Fatalf("peer revoke %d", res.StatusCode)
+	}
+
+	res = do(t, client, http.MethodPost, base+"/v1/photos/"+photo+"/comments", peer.Token, "", map[string]string{"body": "旅伴留了一句"})
+	if res.StatusCode != 201 {
+		t.Fatalf("comment %d %s", res.StatusCode, readBody(res))
+	}
+	var peerComment struct {
+		ID string `json:"id"`
+	}
+	res = do(t, client, http.MethodPost, base+"/v1/photos/"+photo+"/comments", owner.Token, "", map[string]string{"body": "海边也留了一句"})
+	body := readBody(res)
+	if res.StatusCode != 201 {
+		t.Fatalf("owner comment %d %s", res.StatusCode, body)
+	}
+	json.Unmarshal(body, &peerComment)
+	ownerComment := peerComment.ID
+	res = do(t, client, http.MethodGet, base+"/v1/photos/"+photo+"/comments", peer.Token, "", nil)
+	body = readBody(res)
+	if !bytes.Contains(body, []byte("旅伴留了一句")) || !bytes.Contains(body, []byte("海边也留了一句")) {
+		t.Fatalf("comments %s", body)
+	}
+	var listed struct {
+		Comments []struct {
+			ID   string `json:"id"`
+			Body string `json:"body"`
+			Mine bool   `json:"mine"`
+		} `json:"comments"`
+	}
+	json.Unmarshal(body, &listed)
+	var peerCommentID string
+	for _, comment := range listed.Comments {
+		if comment.Mine {
+			peerCommentID = comment.ID
+		}
+	}
+	res = do(t, client, http.MethodDelete, base+"/v1/photos/"+photo+"/comments/"+peerCommentID, peer.Token, "", nil)
+	if res.StatusCode != 204 {
+		t.Fatalf("delete own %d %s", res.StatusCode, readBody(res))
+	}
+	res = do(t, client, http.MethodDelete, base+"/v1/photos/"+photo+"/comments/"+ownerComment, peer.Token, "", nil)
+	if res.StatusCode != 409 {
+		t.Fatalf("delete other %d", res.StatusCode)
+	}
+	res = do(t, client, http.MethodGet, base+"/v1/photos/"+photo+"/comments", owner.Token, "", nil)
+	body = readBody(res)
+	if bytes.Contains(body, []byte("旅伴留了一句")) || !bytes.Contains(body, []byte("海边也留了一句")) {
+		t.Fatalf("after delete %s", body)
+	}
+
+	res = do(t, client, http.MethodPost, base+"/v1/shares/"+shareText+"/events", peer.Token, accessText, map[string]string{"kind": "view", "client": "web"})
+	if res.StatusCode != 204 {
+		t.Fatalf("view %d %s", res.StatusCode, readBody(res))
+	}
+	res = do(t, client, http.MethodGet, base+"/v1/activity", owner.Token, "", nil)
+	body = readBody(res)
+	if !bytes.Contains(body, []byte("旅伴")) || !bytes.Contains(body, []byte("打开了你的分享")) || !bytes.Contains(body, []byte("往你的链接里加了照片")) {
+		t.Fatalf("feed %s", body)
+	}
+	var feed struct {
+		Unread int `json:"unread"`
+		Items  []struct {
+			ID   string `json:"id"`
+			Read bool   `json:"read"`
+		} `json:"items"`
+	}
+	json.Unmarshal(body, &feed)
+	if feed.Unread < 1 {
+		t.Fatal("unread should be visible")
+	}
+	for _, item := range feed.Items {
+		res = do(t, client, http.MethodPost, base+"/v1/activity/read", owner.Token, "", map[string]string{"id": item.ID})
+		if res.StatusCode != 204 {
+			t.Fatalf("read %d", res.StatusCode)
+		}
+	}
+	res = do(t, client, http.MethodGet, base+"/v1/activity", owner.Token, "", nil)
+	body = readBody(res)
+	json.Unmarshal(body, &feed)
+	if feed.Unread != 0 {
+		t.Fatalf("unread remained %s", body)
+	}
+
+	res = do(t, client, http.MethodPost, base+"/v1/me/recovery", owner.Token, "", map[string]string{})
+	var recovery struct {
+		Code string `json:"code"`
+	}
+	json.NewDecoder(res.Body).Decode(&recovery)
+	res.Body.Close()
+	if res.StatusCode != 200 || len(recovery.Code) != 16 {
+		t.Fatalf("recovery %d %q", res.StatusCode, recovery.Code)
+	}
+	res = do(t, client, http.MethodPost, base+"/v1/recover", "", "", map[string]string{
+		"deviceId": "people-other-device01", "code": "WRONGCODEWRONG1", "platform": "web",
+	})
+	if res.StatusCode != 400 {
+		t.Fatalf("bad code %d %s", res.StatusCode, readBody(res))
+	}
+	res = do(t, client, http.MethodPost, base+"/v1/recover", "", "", map[string]string{
+		"deviceId": "people-other-device01", "code": recovery.Code, "platform": "web",
+	})
+	body = readBody(res)
+	if res.StatusCode != 200 || !bytes.Contains(body, []byte("海边")) {
+		t.Fatalf("recover %d %s", res.StatusCode, body)
+	}
+	var recovered struct {
+		Token string `json:"token"`
+		User  struct {
+			ID string `json:"id"`
+		} `json:"user"`
+	}
+	json.Unmarshal(body, &recovered)
+	if recovered.User.ID != owner.ID {
+		t.Fatalf("recovered user %s want %s", recovered.User.ID, owner.ID)
+	}
+	res = do(t, client, http.MethodGet, base+"/v1/me/devices", owner.Token, "", nil)
+	body = readBody(res)
+	if !bytes.Contains(body, []byte("people-owner-device01")) || !bytes.Contains(body, []byte("people-other-device01")) {
+		t.Fatalf("devices %s", body)
+	}
+	res = do(t, client, http.MethodPost, base+"/v1/friends", peer.Token, "", map[string]string{"userId": owner.ID})
+	if res.StatusCode != 200 {
+		t.Fatalf("friend %d %s", res.StatusCode, readBody(res))
+	}
+	res = do(t, client, http.MethodGet, base+"/v1/friends", recovered.Token, "", nil)
+	if !bytes.Contains(readBody(res), []byte("旅伴")) {
+		t.Fatal("the recovered device should see the same friends")
+	}
+	res = do(t, client, http.MethodGet, base+"/v1/me", owner.Token, "", nil)
+	if bytes.Contains(readBody(res), []byte(recovery.Code)) {
+		t.Fatal("profile must not return the recovery code")
+	}
 }
 
 func httpGet(t *testing.T, client *http.Client, url string) []byte {

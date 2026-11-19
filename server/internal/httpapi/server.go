@@ -69,6 +69,7 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/admin/overview", s.adminOverview)
 		r.Post("/auth/apple", s.authApple)
 		r.Post("/register", s.register)
+		r.Post("/recover", s.recoverDevice)
 		r.Post("/devices/session", s.deviceSession)
 		r.Put("/direct/{token}", s.directPut)
 		r.Get("/direct/{token}", s.directGet)
@@ -76,11 +77,18 @@ func (s *Server) Handler() http.Handler {
 			r.Use(s.withUser)
 			r.Get("/me", s.me)
 			r.Patch("/me", s.patchMe)
+			r.Post("/me/recovery", s.setRecovery)
+			r.Get("/me/devices", s.listDevices)
+			r.Get("/activity", s.activityFeed)
+			r.Post("/activity/read", s.readActivity)
 			r.Get("/users", s.searchUsers)
 			r.Get("/users/{id}", s.publicUser)
 			r.Get("/photos", s.photoCards)
 			r.Post("/photos/{id}/like", s.likePhoto)
 			r.Delete("/photos/{id}/like", s.likePhoto)
+			r.Get("/photos/{id}/comments", s.listComments)
+			r.Post("/photos/{id}/comments", s.addComment)
+			r.Delete("/photos/{id}/comments/{commentId}", s.deleteComment)
 			r.Get("/friends", s.friendLists)
 			r.Post("/friends", s.requestFriend)
 			r.Post("/friends/{id}/accept", s.acceptFriend)
@@ -318,7 +326,7 @@ func (s *Server) photoCards(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]any, 0, len(cards))
 	for _, card := range cards {
-		out = append(out, photoCardJSON(card))
+		out = append(out, photoCardJSON(card, userID(r)))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"photos": out})
 }
@@ -347,10 +355,6 @@ func (s *Server) claimPhotos(w http.ResponseWriter, r *http.Request) {
 	for _, item := range body.Items {
 		if item.Kind != "shared" && item.Kind != "saved" {
 			writeJSON(w, http.StatusBadRequest, errBody{"bad_request"})
-			return
-		}
-		if item.Kind == "shared" && uid != sh.OwnerID {
-			writeJSON(w, http.StatusForbidden, errBody{"access_denied"})
 			return
 		}
 		fingerprint, err := canonicalFingerprint(item.SHA256)
@@ -476,10 +480,11 @@ func (s *Server) listMine(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) uploads(w http.ResponseWriter, r *http.Request) {
-	shareID, ok := s.ownedShare(w, r)
+	sh, ok := s.appendShare(w, r)
 	if !ok {
 		return
 	}
+	shareID := sh.ID
 	if s.S3 == nil {
 		free, err := blob.FreeBytes(s.Disk.Root())
 		if err != nil {
@@ -605,10 +610,11 @@ func (s *Server) signPut(ctx context.Context, key string, size int64, part uint1
 }
 
 func (s *Server) complete(w http.ResponseWriter, r *http.Request) {
-	shareID, ok := s.ownedShare(w, r)
+	sh, ok := s.appendShare(w, r)
 	if !ok {
 		return
 	}
+	shareID := sh.ID
 	var body struct {
 		Objects []struct {
 			ID       string `json:"id"`
@@ -661,6 +667,9 @@ func (s *Server) complete(w http.ResponseWriter, r *http.Request) {
 	if err := s.Store.Finish(r.Context(), userID(r), shareID, manifestID, nonce); err != nil {
 		writeStoreErr(w, err)
 		return
+	}
+	if userID(r) != sh.OwnerID {
+		_ = s.Store.AddEvent(r.Context(), shareID, userID(r), "append", "web")
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -1154,6 +1163,8 @@ func writeStoreErr(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusGone, errBody{code})
 	case errors.Is(err, store.ErrNotFriends):
 		writeJSON(w, http.StatusForbidden, errBody{"not_friends"})
+	case errors.Is(err, store.ErrBadCode):
+		writeJSON(w, http.StatusBadRequest, errBody{"bad_code"})
 	case errors.Is(err, store.ErrBad):
 		writeJSON(w, http.StatusBadRequest, errBody{"bad_request"})
 	default:
@@ -1192,7 +1203,7 @@ func normalizeDetail(s string, max int) (string, error) {
 
 var errDetail = errors.New("detail")
 
-func photoCardJSON(card store.PhotoCard) map[string]any {
+func photoCardJSON(card store.PhotoCard, viewer string) map[string]any {
 	sharedBy := []any{}
 	holders := []any{}
 	savers := []any{}
@@ -1235,6 +1246,7 @@ func photoCardJSON(card store.PhotoCard) map[string]any {
 		"likeCount": card.LikeCount,
 		"liked":     card.Liked,
 		"likedBy":   likedBy,
+		"comments":  commentJSON(card.Comments, viewer),
 	}
 }
 
