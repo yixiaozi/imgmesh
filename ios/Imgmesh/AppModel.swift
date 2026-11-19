@@ -1,0 +1,331 @@
+import AuthenticationServices
+import Foundation
+import UIKit
+
+@MainActor
+final class AppModel: ObservableObject {
+    @Published var session: Session?
+    @Published var shares: [LocalShare] = []
+    @Published var status = ""
+    @Published var errorMessage = ""
+    @Published var link = ""
+    @Published var busy = false
+    @Published var selectedID: String?
+    @Published var gallery: [GalleryPhoto] = []
+    @Published var events: [APIClient.RemoteEvent] = []
+
+    let api = APIClient()
+    private let deviceID = UIDevice.current.identifierForVendor?.uuidString ?? UUID().uuidString
+
+    struct GalleryPhoto: Identifiable {
+        var id: String
+        var name: String
+        var mime: String
+        var preview: Data?
+        var original: Data?
+        var item: ManifestItem
+    }
+
+    init() {
+        session = KeychainStore.loadSession()
+        shares = ShareLibrary.load()
+    }
+
+    func signIn(_ credential: ASAuthorizationAppleIDCredential) async {
+        guard let tokenData = credential.identityToken, let token = String(data: tokenData, encoding: .utf8) else {
+            errorMessage = "没有拿到 Apple 登录凭证。"
+            return
+        }
+        let name = [credential.fullName?.familyName, credential.fullName?.givenName].compactMap { $0 }.joined()
+        do {
+            let loggedIn = try await api.login(identityToken: token, displayName: name)
+            let stored = Session(token: loggedIn.token, displayName: loggedIn.name.isEmpty ? name : loggedIn.name)
+            session = stored
+            KeychainStore.saveSession(stored)
+            errorMessage = ""
+        } catch {
+            errorMessage = apiMessage(error)
+        }
+    }
+
+    func signOut() {
+        session = nil
+        KeychainStore.clearSession()
+    }
+
+    func createShare(providers: [NSItemProvider], title: String) async {
+        guard let session else {
+            errorMessage = "先用 Apple 登录，再分享照片。"
+            return
+        }
+        guard !providers.isEmpty else { return }
+        guard providers.count <= 200 else {
+            errorMessage = "一次最多 200 张。"
+            return
+        }
+        busy = true
+        link = ""
+        errorMessage = ""
+        status = "正在读取照片"
+        defer { busy = false }
+        do {
+            let shareID = try ImgmeshSeal.random(16)
+            let master = try ImgmeshSeal.random(32)
+            let shareIDText = ImgmeshSeal.encode(shareID)
+            let masterText = ImgmeshSeal.encode(master)
+            let tag = ImgmeshSeal.encode(try ImgmeshSeal.accessTag(master: master, shareID: shareID))
+            try await api.createShare(token: session.token, id: shareIDText, accessTag: tag)
+
+            let fileKey = try ImgmeshSeal.derive(master: master, shareID: shareID, info: "imgmesh-file-v1")
+            var items: [ManifestItem] = []
+            var blobs: [String: Data] = [:]
+            var total = 0
+            for (index, provider) in providers.enumerated() {
+                status = "正在加密 \(index + 1)/\(providers.count)"
+                let photo = try await PhotoIO.load(provider)
+                total += photo.data.count
+                if total > 2 * 1024 * 1024 * 1024 { throw APIError.transport("这一组照片超过 2GB。") }
+                let objectID = try ImgmeshSeal.random(16)
+                let nonce = try ImgmeshSeal.random(12)
+                let objectText = ImgmeshSeal.encode(objectID)
+                let cipher = try ImgmeshSeal.encrypt(
+                    key: fileKey,
+                    nonce: nonce,
+                    aad: try ImgmeshSeal.aad(shareID: shareID, objectID: objectID),
+                    plain: photo.data
+                )
+                blobs[objectText] = cipher
+                var thumb: ManifestThumb?
+                if let jpeg = PhotoIO.thumbnail(from: photo.data) {
+                    let thumbID = try ImgmeshSeal.random(16)
+                    let thumbNonce = try ImgmeshSeal.random(12)
+                    let thumbText = ImgmeshSeal.encode(thumbID)
+                    blobs[thumbText] = try ImgmeshSeal.encrypt(
+                        key: fileKey,
+                        nonce: thumbNonce,
+                        aad: try ImgmeshSeal.aad(shareID: shareID, objectID: thumbID),
+                        plain: jpeg
+                    )
+                    thumb = ManifestThumb(id: thumbText, bytes: jpeg.count, nonce: ImgmeshSeal.encode(thumbNonce))
+                }
+                items.append(ManifestItem(
+                    id: objectText,
+                    name: photo.name,
+                    mime: photo.mime,
+                    bytes: photo.data.count,
+                    nonce: ImgmeshSeal.encode(nonce),
+                    thumb: thumb
+                ))
+            }
+
+            let manifest = Manifest(v: 1, title: title.isEmpty ? "旅行照片" : title, items: items)
+            let manifestPlain = try JSONEncoder().encode(manifest)
+            let manifestID = try ImgmeshSeal.random(16)
+            let manifestNonce = try ImgmeshSeal.random(12)
+            let manifestText = ImgmeshSeal.encode(manifestID)
+            let manifestKey = try ImgmeshSeal.derive(master: master, shareID: shareID, info: "imgmesh-manifest-v1")
+            blobs[manifestText] = try ImgmeshSeal.encrypt(
+                key: manifestKey,
+                nonce: manifestNonce,
+                aad: try ImgmeshSeal.aad(shareID: shareID, objectID: manifestID),
+                plain: manifestPlain
+            )
+
+            var objects: [[String: Any]] = []
+            for item in items {
+                objects.append(objectPayload(id: item.id, kind: "original", plain: item.bytes, cipher: blobs[item.id]?.count ?? 0))
+                if let thumb = item.thumb {
+                    objects.append(objectPayload(id: thumb.id, kind: "thumb", plain: thumb.bytes, cipher: blobs[thumb.id]?.count ?? 0))
+                }
+            }
+            objects.append(objectPayload(id: manifestText, kind: "manifest", plain: manifestPlain.count, cipher: blobs[manifestText]?.count ?? 0))
+
+            status = "正在上传"
+            let plans = try await api.reserve(token: session.token, shareID: shareIDText, objects: objects)
+            var completed: [[String: Any]] = []
+            for plan in plans {
+                guard let payload = blobs[plan.id] else { throw APIError.transport("上传计划对不上。") }
+                var parts: [[String: Any]] = []
+                if !plan.ready {
+                    var offset = 0
+                    let chunk = plan.partSize ?? payload.count
+                    for part in plan.parts {
+                        let end: Int
+                        if part.partNumber == 0 {
+                            end = payload.count
+                        } else {
+                            end = min(offset + max(chunk, 1), payload.count)
+                        }
+                        let slice = payload.subdata(in: offset..<end)
+                        guard let uploadURL = URL(string: part.url) else { throw APIError.transport("上传地址无效") }
+                        let etag = try await api.put(url: uploadURL, data: slice)
+                        parts.append(["partNumber": part.partNumber, "etag": etag])
+                        if part.partNumber > 0 { offset = end }
+                    }
+                }
+                completed.append(["id": plan.id, "byteSize": payload.count, "parts": parts])
+            }
+            try await api.complete(
+                token: session.token,
+                shareID: shareIDText,
+                objects: completed,
+                manifestID: manifestText,
+                nonce: ImgmeshSeal.encode(manifestNonce)
+            )
+            let local = LocalShare(
+                id: shareIDText,
+                masterKey: masterText,
+                title: manifest.title,
+                role: "sent",
+                photoCount: items.count,
+                createdAt: Date()
+            )
+            shares.removeAll { $0.id == local.id }
+            shares.insert(local, at: 0)
+            ShareLibrary.save(shares)
+            link = ShareURL.make(id: shareIDText, masterKey: masterText)
+            status = "链接已经准备好。发出去时要带上井号后面的密钥。"
+        } catch {
+            status = ""
+            errorMessage = apiMessage(error)
+        }
+    }
+
+    func accept(_ url: URL) {
+        guard let parsed = ShareURL.parse(url.absoluteString) else {
+            errorMessage = "这个链接里没有密钥。请粘贴完整链接，井号后面的部分也要保留。"
+            return
+        }
+        if !shares.contains(where: { $0.id == parsed.id }) {
+            shares.insert(LocalShare(id: parsed.id, masterKey: parsed.masterKey, title: "收到的照片", role: "received", photoCount: 0, createdAt: Date()), at: 0)
+            ShareLibrary.save(shares)
+        }
+        selectedID = parsed.id
+        errorMessage = ""
+    }
+
+    func accept(text: String) {
+        guard let url = URL(string: text.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            errorMessage = "链接格式不对。"
+            return
+        }
+        accept(url)
+    }
+
+    func loadGallery(_ share: LocalShare) async {
+        gallery = []
+        events = []
+        status = "正在解密"
+        errorMessage = ""
+        do {
+            let shareID = try ImgmeshSeal.decode(share.id)
+            let master = try ImgmeshSeal.decode(share.masterKey)
+            let access = ImgmeshSeal.encode(try ImgmeshSeal.accessTag(master: master, shareID: shareID))
+            let listed = try await api.manifest(shareID: share.id, access: access)
+            let manifestKey = try ImgmeshSeal.derive(master: master, shareID: shareID, info: "imgmesh-manifest-v1")
+            let manifestCipher = try await api.download(listed.url)
+            let plain = try ImgmeshSeal.decrypt(
+                key: manifestKey,
+                nonce: try ImgmeshSeal.decode(listed.nonce),
+                aad: try ImgmeshSeal.aad(shareID: shareID, objectID: try ImgmeshSeal.decode(listed.id)),
+                ciphertext: manifestCipher
+            )
+            let manifest = try JSONDecoder().decode(Manifest.self, from: plain)
+            let fileKey = try ImgmeshSeal.derive(master: master, shareID: shareID, info: "imgmesh-file-v1")
+            var photos: [GalleryPhoto] = []
+            for item in manifest.items {
+                var preview: Data?
+                if let thumb = item.thumb {
+                    let cipher = try await api.download(try await api.objectURL(shareID: share.id, objectID: thumb.id, access: access))
+                    preview = try? ImgmeshSeal.decrypt(
+                        key: fileKey,
+                        nonce: try ImgmeshSeal.decode(thumb.nonce),
+                        aad: try ImgmeshSeal.aad(shareID: shareID, objectID: try ImgmeshSeal.decode(thumb.id)),
+                        ciphertext: cipher
+                    )
+                }
+                photos.append(GalleryPhoto(id: item.id, name: item.name ?? "照片", mime: item.mime, preview: preview, original: nil, item: item))
+            }
+            gallery = photos
+            if let index = shares.firstIndex(where: { $0.id == share.id }) {
+                shares[index].photoCount = photos.count
+                shares[index].title = manifest.title
+                ShareLibrary.save(shares)
+            }
+            status = "\(photos.count) 张照片"
+            try? await api.record(shareID: share.id, access: access, kind: "open", name: senderName, deviceID: deviceID)
+            if share.role == "sent", let token = session?.token {
+                events = (try? await api.events(token: token, shareID: share.id)) ?? []
+            }
+        } catch {
+            status = ""
+            errorMessage = apiMessage(error)
+        }
+    }
+
+    func saveGallery(_ share: LocalShare) async {
+        busy = true
+        defer { busy = false }
+        do {
+            let images = try await originals(share)
+            try await PhotoIO.saveToLibrary(images)
+            let shareID = try ImgmeshSeal.decode(share.id)
+            let master = try ImgmeshSeal.decode(share.masterKey)
+            let access = ImgmeshSeal.encode(try ImgmeshSeal.accessTag(master: master, shareID: shareID))
+            try? await api.record(shareID: share.id, access: access, kind: "save", name: senderName, deviceID: deviceID)
+            status = "已经存进相册。"
+            errorMessage = ""
+        } catch {
+            errorMessage = apiMessage(error)
+        }
+    }
+
+    func remove(_ share: LocalShare) async {
+        if let shareID = try? ImgmeshSeal.decode(share.id), let master = try? ImgmeshSeal.decode(share.masterKey),
+           let access = try? ImgmeshSeal.encode(ImgmeshSeal.accessTag(master: master, shareID: shareID)) {
+            try? await api.record(shareID: share.id, access: access, kind: "remove", name: senderName, deviceID: deviceID)
+        }
+        shares.removeAll { $0.id == share.id }
+        ShareLibrary.save(shares)
+        if selectedID == share.id { selectedID = nil }
+    }
+
+    func revoke(_ share: LocalShare) async {
+        guard let token = session?.token else {
+            errorMessage = "先登录再撤销。"
+            return
+        }
+        do {
+            try await api.revoke(token: token, shareID: share.id)
+            await remove(share)
+            status = "链接已经失效。对方相册里已经保存的照片还在。"
+        } catch {
+            errorMessage = apiMessage(error)
+        }
+    }
+
+    private var senderName: String { session?.displayName.isEmpty == false ? session!.displayName : "iPhone" }
+
+    private func originals(_ share: LocalShare) async throws -> [Data] {
+        let shareID = try ImgmeshSeal.decode(share.id)
+        let master = try ImgmeshSeal.decode(share.masterKey)
+        let access = ImgmeshSeal.encode(try ImgmeshSeal.accessTag(master: master, shareID: shareID))
+        let fileKey = try ImgmeshSeal.derive(master: master, shareID: shareID, info: "imgmesh-file-v1")
+        let items = gallery.map(\.item)
+        var images: [Data] = []
+        for item in items {
+            let cipher = try await api.download(try await api.objectURL(shareID: share.id, objectID: item.id, access: access))
+            images.append(try ImgmeshSeal.decrypt(
+                key: fileKey,
+                nonce: try ImgmeshSeal.decode(item.nonce),
+                aad: try ImgmeshSeal.aad(shareID: shareID, objectID: try ImgmeshSeal.decode(item.id)),
+                ciphertext: cipher
+            ))
+        }
+        return images
+    }
+
+    private func objectPayload(id: String, kind: String, plain: Int, cipher: Int) -> [String: Any] {
+        ["id": id, "kind": kind, "plaintextBytes": plain, "ciphertextBytes": cipher]
+    }
+}

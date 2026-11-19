@@ -1,6 +1,6 @@
 # imgmesh 技术架构
 
-状态：第一版边界与加密常量已冻结。本文是后续实现的依据。产品代码尚未开始。
+状态：第一版边界与加密常量已冻结。API、网页查看器和 iOS 工程已经按本文实现。当前这台 VPS 还没有配置 R2，密文先放在本机磁盘；预签名上传和下载的接口形状不变，配上 `S3_*` 环境变量后改为对象存储。
 
 官网：https://imgmesh.com。本仓库目前只有营销站（`index.html`、`styles.css`、`favicon.svg`），由 `.github/workflows/deploy-website.yml` 同步到服务器 `/var/www/imgmesh/`。
 
@@ -188,10 +188,11 @@ PostgreSQL。标识列存原始字节或存 base64url 均可，但全库只选�
 - `POST /v1/shares/{id}/uploads`：为一批对象签发 PUT 预签名。单对象明文超过 16 MiB 时改发 S3 multipart 的分片预签名
 - `POST /v1/shares/{id}/uploads/complete`：核对密文大小，标记对象可读。同一对象重复完成保持成功
 - `GET /v1/shares/{id}`：返回张数、总大小、是否过期或已撤销
-- `GET /v1/shares/{id}/manifest`：返回清单密文的短时 GET 预签名，以及 `manifest_nonce`
+- `GET /v1/shares/{id}/manifest`：返回清单对象 id、`manifest_nonce` 和短时 GET 地址。对象 id 要参与 AAD，所以必须一起返回
 - `GET /v1/shares/{id}/objects/{oid}`：返回该对象的短时 GET 预签名
 - `POST /v1/shares/{id}/events`：上报 `open`、`save`、`remove`
 - `GET /v1/me/shares`：当前发送者的分享列表
+- `GET /v1/shares/{id}/events`：发送者查看 open / save / remove
 - `DELETE /v1/shares/{id}`：发送者撤销，并删除对象存储中的密文
 
 预签名 PUT 有效期 15 分钟，GET 有效期 5 分钟。客户端把已完成的 multipart part 记在本地，中断后按未完成的 part 续传。
@@ -214,7 +215,7 @@ Vite + TypeScript，解密使用 WebCrypto。Nginx 把 `/s/*` 指到这个 SPA�
 
 营销站留在仓库根目录。后续代码按目录加入：
 
-- `server/`：Go API。路由用 chi，数据库用 pgx，迁移用 golang-migrate，对象存储用 aws-sdk-go-v2
+- `server/`：Go API。路由用 chi，数据库用 pgx，对象存储用 aws-sdk-go-v2。启动时按版本执行 `internal/store/migrations` 里的 SQL
 - `web/`：查看器
 - `ios/`：Xcode 工程
 - `docs/architecture.md`：本文

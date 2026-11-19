@@ -1,0 +1,22 @@
+[Unit]
+Description=imgmesh API
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=imgmesh
+Group=imgmesh
+EnvironmentFile=/etc/imgmesh/api.env
+ExecStart=/usr/local/bin/imgmesh-api
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/imgmesh
+WorkingDirectory=/var/lib/imgmesh
+
+[Install]
+WantedBy=multi-user.target

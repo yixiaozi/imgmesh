@@ -1,0 +1,133 @@
+:root {
+  --ink: #1a2332;
+  --ink-soft: #3d4a5c;
+  --paper: #f3f6f5;
+  --ocean: #0e6b6e;
+  --ocean-deep: #0a4f52;
+  --foam: #b8d4d2;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  color: var(--ink);
+  background:
+    radial-gradient(120% 80% at 100% -10%, #d7ebe8 0%, transparent 55%),
+    var(--paper);
+  font-family: "Noto Sans SC", system-ui, sans-serif;
+  line-height: 1.65;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-weight: 600;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.85rem;
+  padding: 0.7rem 1.25rem;
+  border: 0;
+  border-radius: 0.55rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-primary {
+  background: var(--ocean);
+  color: #f7fffe;
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.viewer {
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: 1.1rem 1.25rem 3rem;
+}
+
+.viewer-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+}
+
+.viewer h1 {
+  margin: 1.4rem 0 0.4rem;
+  font-family: "Noto Serif SC", serif;
+  font-size: clamp(1.6rem, 4vw, 2.2rem);
+}
+
+.viewer-note,
+.viewer-status {
+  color: var(--ink-soft);
+}
+
+.viewer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin: 1rem 0 1.2rem;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
+  gap: 0.7rem;
+}
+
+.tile-btn {
+  padding: 0;
+  border: 0;
+  background: rgba(255, 255, 255, 0.55);
+  border-radius: 0.7rem;
+  overflow: hidden;
+  cursor: pointer;
+  aspect-ratio: 1;
+}
+
+.tile-btn img,
+.stage img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.tile-fallback {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  padding: 0.6rem;
+  color: var(--ink-soft);
+  font-size: 0.85rem;
+}
+
+.stage {
+  margin-top: 1rem;
+  display: grid;
+  gap: 0.8rem;
+}
+
+.stage img {
+  max-height: 70vh;
+  object-fit: contain;
+  background: rgba(255, 255, 255, 0.7);
+  border-radius: 0.8rem;
+}
+
+.stage-fallback {
+  padding: 2rem 1rem;
+  text-align: center;
+  background: rgba(255, 255, 255, 0.7);
+  border-radius: 0.8rem;
+}
