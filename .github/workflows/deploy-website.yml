@@ -58,4 +58,4 @@ jobs:
             deploy/nginx-imgmesh-locations.conf \
             deploy/remote-setup.sh \
             "${SSH_USER}@${SSH_HOST}:/tmp/"
-          $SSH "${SSH_USER}@${SSH_HOST}" "install -m 755 /tmp/imgmesh-api /usr/local/bin/imgmesh-api && install -m 755 /tmp/remote-setup.sh /tmp/remote-setup.sh && bash /tmp/remote-setup.sh"
+          $SSH "${SSH_USER}@${SSH_HOST}" "install -m 755 /tmp/imgmesh-api /usr/local/bin/imgmesh-api && chmod 755 /tmp/remote-setup.sh && bash /tmp/remote-setup.sh"
