@@ -889,6 +889,95 @@ func TestLikesFriendsAndMessages(t *testing.T) {
 	}
 }
 
+func TestUsageStats(t *testing.T) {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		dsn = "postgres:///imgmesh_test?host=/var/run/postgresql"
+	}
+	ctx := context.Background()
+	st, err := store.Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(st.Close)
+	if err := st.Reset(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := "http://" + ln.Addr().String()
+	api := &Server{Store: st, Secret: bytes.Repeat([]byte{7}, 32), PublicBaseURL: base, Apple: fakeApple{}, DiskFreeMin: 1}
+	srv := &http.Server{Handler: api.Handler()}
+	go srv.Serve(ln)
+	t.Cleanup(func() { srv.Close() })
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	owner := registerNamed(t, client, base, "usage-owner-device1", "海边")
+	registerNamed(t, client, base, "usage-other-device1", "阿宁")
+	shareID := bytes.Repeat([]byte{0x51}, 16)
+	if err := st.CreateShare(ctx, owner.ID, shareID, bytes.Repeat([]byte{0x52}, 32), nil); err != nil {
+		t.Fatal(err)
+	}
+	originalID := bytes.Repeat([]byte{0x53}, 16)
+	thumbID := bytes.Repeat([]byte{0x54}, 16)
+	if _, _, err := st.Reserve(ctx, owner.ID, shareID, []store.NewObject{
+		{ID: originalID, Kind: "original", Plaintext: 8, Ciphertext: 24},
+		{ID: thumbID, Kind: "thumb", Plaintext: 8, Ciphertext: 24},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MarkReady(ctx, shareID, originalID, 24); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MarkReady(ctx, shareID, originalID, 24); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MarkReady(ctx, shareID, thumbID, 24); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddEvent(ctx, shareID, owner.ID, "view", "web"); err != nil {
+		t.Fatal(err)
+	}
+
+	var snap struct {
+		Users    int   `json:"users"`
+		Devices  int   `json:"devices"`
+		Photos   int64 `json:"photosTransferred"`
+		Activity []struct {
+			Kind string `json:"kind"`
+			Name string `json:"name"`
+		} `json:"activity"`
+	}
+	body := httpGet(t, client, base+"/v1/stats")
+	if err := json.Unmarshal(body, &snap); err != nil {
+		t.Fatal(err)
+	}
+	if snap.Users != 2 || snap.Devices != 2 || snap.Photos != 1 {
+		t.Fatalf("stats users=%d devices=%d photos=%d %s", snap.Users, snap.Devices, snap.Photos, body)
+	}
+	seen := false
+	for _, event := range snap.Activity {
+		if event.Kind == "view" && event.Name == "海边" {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Fatalf("activity %s", body)
+	}
+	if _, err := st.Revoke(ctx, owner.ID, shareID); err != nil {
+		t.Fatal(err)
+	}
+	body = httpGet(t, client, base+"/v1/stats")
+	if err := json.Unmarshal(body, &snap); err != nil {
+		t.Fatal(err)
+	}
+	if snap.Photos != 1 {
+		t.Fatalf("revoke changed the transfer count: %s", body)
+	}
+}
+
 type namedUser struct {
 	Token string
 	ID    string

@@ -64,6 +64,7 @@ func (s *Server) Handler() http.Handler {
 	r.Get("/apple-app-site-association", s.aasa)
 	r.Route("/v1", func(r chi.Router) {
 		r.Get("/health", s.health)
+		r.Get("/stats", s.usage)
 		r.Post("/auth/apple", s.authApple)
 		r.Post("/register", s.register)
 		r.Post("/devices/session", s.deviceSession)
@@ -108,6 +109,27 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) usage(w http.ResponseWriter, r *http.Request) {
+	snap, err := s.Store.Usage(r.Context())
+	if err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	activity := make([]any, 0, len(snap.Activity))
+	for _, event := range snap.Activity {
+		activity = append(activity, map[string]any{
+			"at": event.At, "kind": event.Kind, "name": event.Name, "detail": event.Detail,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"users":             snap.Users,
+		"devices":           snap.Devices,
+		"photosTransferred": snap.PhotosTransferred,
+		"updatedAt":         time.Now().UTC(),
+		"activity":          activity,
+	})
 }
 
 func (s *Server) authApple(w http.ResponseWriter, r *http.Request) {

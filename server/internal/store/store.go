@@ -198,7 +198,10 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 func (s *Store) Close() { s.pool.Close() }
 
 func (s *Store) Reset(ctx context.Context) error {
-	_, err := s.pool.Exec(ctx, `TRUNCATE message_reads, messages, friendships, photo_likes, follows, photo_people, photo_cards, holdings, events, objects, shares, sessions, devices, users CASCADE`)
+	_, err := s.pool.Exec(ctx, `
+		TRUNCATE message_reads, messages, friendships, photo_likes, follows, photo_people, photo_cards, holdings, events, objects, shares, sessions, devices, users CASCADE;
+		UPDATE usage_totals SET photos_transferred = 0
+	`)
 	return err
 }
 
@@ -944,10 +947,15 @@ func (s *Store) Object(ctx context.Context, shareID, objectID []byte) (Object, e
 }
 
 func (s *Store) MarkReady(ctx context.Context, shareID, objectID []byte, size int64) error {
-	var status string
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var status, kind string
 	var want int64
 	var current *int64
-	err := s.pool.QueryRow(ctx, `SELECT status, plaintext_bytes, byte_size FROM objects WHERE id=$1 AND share_id=$2`, objectID, shareID).Scan(&status, &want, &current)
+	err = tx.QueryRow(ctx, `SELECT status, kind, plaintext_bytes, byte_size FROM objects WHERE id=$1 AND share_id=$2 FOR UPDATE`, objectID, shareID).Scan(&status, &kind, &want, &current)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrNotFound
 	}
@@ -963,8 +971,19 @@ func (s *Store) MarkReady(ctx context.Context, shareID, objectID []byte, size in
 		}
 		return ErrConflict
 	}
-	_, err = s.pool.Exec(ctx, `UPDATE objects SET status='ready', byte_size=$3 WHERE id=$1 AND share_id=$2`, objectID, shareID, size)
-	return err
+	if _, err = tx.Exec(ctx, `UPDATE objects SET status='ready', byte_size=$3 WHERE id=$1 AND share_id=$2`, objectID, shareID, size); err != nil {
+		return err
+	}
+	if kind == "original" {
+		tag, err := tx.Exec(ctx, `UPDATE usage_totals SET photos_transferred = photos_transferred + 1`)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return fmt.Errorf("usage totals missing")
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *Store) Finish(ctx context.Context, ownerID string, shareID, manifestID, nonce []byte) error {

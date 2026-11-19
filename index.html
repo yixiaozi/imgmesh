@@ -20,6 +20,7 @@
       <span>imgmesh</span>
     </a>
     <nav class="site-nav" aria-label="站点">
+      <a href="#usage">使用情况</a>
       <a href="/install/">安装使用</a>
     </nav>
   </header>
@@ -151,6 +152,18 @@
       <a class="btn btn-primary" href="/install/">完整步骤</a>
     </section>
 
+    <section class="section usage" id="usage" aria-labelledby="usage-title">
+      <h2 id="usage-title">现在的使用情况</h2>
+      <p class="section-lead">用户和设备按登记计算。照片按已经传完的原图计算，撤销分享之后仍然保留。页面每 5 秒向服务器要一次最新数字。</p>
+      <div class="usage-grid">
+        <article><strong id="stat-users">–</strong><span>用户</span></article>
+        <article><strong id="stat-devices">–</strong><span>设备</span></article>
+        <article><strong id="stat-photos">–</strong><span>已传输的照片</span></article>
+      </div>
+      <p class="usage-updated" id="stat-updated">正在读取</p>
+      <ol class="usage-feed" id="stat-feed"></ol>
+    </section>
+
     <section class="section features" aria-labelledby="features-title">
       <h2 id="features-title">为什么放心发</h2>
       <p class="section-lead">隐私、可见性、差网上传，三件事一起做对。</p>
@@ -206,6 +219,66 @@
 
   <script>
     document.getElementById("y").textContent = new Date().getFullYear();
+
+    const usageText = {
+      user: (name) => name + "登记成了用户",
+      device: (name, detail) => name + "的" + deviceLabel(detail) + "已登记",
+      photo: (name) => name + "传了一张照片",
+      view: (name) => name + "打开了一份分享",
+      open: (name) => name + "打开了一份分享",
+      download: (name) => name + "下载了照片",
+      save: (name) => name + "保存了照片",
+      remove: (name) => name + "从 imgmesh 移除了一份分享",
+    };
+
+    function deviceLabel(platform) {
+      if (platform === "ios") return " iPhone ";
+      if (platform === "desktop") return "电脑";
+      return "浏览器";
+    }
+
+    function usageTime(value) {
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return "";
+      return date.toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+    }
+
+    async function loadUsage() {
+      const updated = document.querySelector("#stat-updated");
+      try {
+        const res = await fetch("/v1/stats");
+        if (!res.ok) throw new Error("stats");
+        const body = await res.json();
+        document.querySelector("#stat-users").textContent = Number(body.users || 0).toLocaleString("zh-CN");
+        document.querySelector("#stat-devices").textContent = Number(body.devices || 0).toLocaleString("zh-CN");
+        document.querySelector("#stat-photos").textContent = Number(body.photosTransferred || 0).toLocaleString("zh-CN");
+        const feed = document.querySelector("#stat-feed");
+        feed.replaceChildren();
+        const activity = Array.isArray(body.activity) ? body.activity : [];
+        if (!activity.length) {
+          const item = document.createElement("li");
+          item.textContent = "还没有使用记录。";
+          feed.append(item);
+        }
+        for (const event of activity) {
+          const item = document.createElement("li");
+          const text = document.createElement("span");
+          const line = usageText[event.kind];
+          text.textContent = line ? line(event.name || "未命名", event.detail || "") : (event.name || "有人") + " 使用了 imgmesh";
+          const when = document.createElement("time");
+          when.dateTime = event.at || "";
+          when.textContent = usageTime(event.at);
+          item.append(text, when);
+          feed.append(item);
+        }
+        updated.textContent = "更新于 " + usageTime(body.updatedAt || new Date().toISOString());
+      } catch {
+        updated.textContent = "刚刚没有连上，数字会在下次刷新时补上。";
+      }
+    }
+
+    loadUsage();
+    setInterval(loadUsage, 5000);
   </script>
 </body>
 </html>

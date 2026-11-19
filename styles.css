@@ -460,6 +460,59 @@ a.cta-note:focus-visible {
   font-size: 0.98rem;
 }
 
+.usage-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
+  gap: 0.8rem;
+  margin-top: 1.5rem;
+}
+
+.usage-grid article {
+  padding: 1rem 1rem 0.85rem;
+  background: rgba(255, 255, 255, 0.62);
+  border-radius: 0.85rem;
+}
+
+.usage-grid strong {
+  display: block;
+  font-family: "Noto Serif SC", serif;
+  font-size: clamp(1.8rem, 4vw, 2.4rem);
+  font-weight: 600;
+  color: var(--ocean);
+  line-height: 1.1;
+}
+
+.usage-grid span,
+.usage-updated {
+  color: var(--ink-soft);
+}
+
+.usage-updated {
+  margin: 0.9rem 0 0;
+  font-size: 0.9rem;
+}
+
+.usage-feed {
+  list-style: none;
+  margin: 0.4rem 0 0;
+  padding: 0;
+}
+
+.usage-feed li {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.65rem 0;
+  border-top: 1px dashed rgba(14, 107, 110, 0.22);
+  color: var(--ink-soft);
+}
+
+.usage-feed time {
+  flex: none;
+  color: var(--ocean);
+  font-size: 0.88rem;
+}
+
 .features {
   display: grid;
   gap: 0;

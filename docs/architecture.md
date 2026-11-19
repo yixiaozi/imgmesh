@@ -213,7 +213,7 @@ PostgreSQL。标识列存原始字节或存 base64url 均可，但全库只选�
 
 对象键建议为 `{share_id_b64}/{object_id_b64}`，不要把密钥或明文文件名放进键。
 
-撤销时删除该分享的全部对象，并写入 `revoked_at`。过期与撤销的分享拒绝新的上传和下载。
+撤销时删除该分享的全部对象，并写入 `revoked_at`。过期与撤销的分享拒绝新的上传和下载。`usage_totals.photos_transferred` 在原图第一次上传完成时加一，撤销不减，用来表示已经由软件传完的照片张数。
 
 ## API
 
@@ -232,6 +232,7 @@ PostgreSQL。标识列存原始字节或存 base64url 均可，但全库只选�
 - `DELETE /v1/friends/{id}`：解除好友
 - `GET /v1/messages?with=`：读取和某位好友的最近 50 条消息，并记为已读。还不是好友时返回 `not_friends`
 - `POST /v1/messages`：给好友发一条不超过 1000 字的消息
+- `GET /v1/stats`：公开的使用情况，不需要登录。返回用户数、设备数、已经传完的原图数，以及最近的登记、传图、查看、下载和保存。不返回链接或密钥
 - `POST /v1/shares/{id}/photos`：登记这组照片。发送者用 `shared`，保存的人用 `saved`
 - `POST /v1/auth/apple`：校验 Sign in with Apple。带上现有会话时，把 Apple 绑到这个用户；没有会话时仍会建立发送者账号
 - `POST /v1/shares`：创建分享，保存 `access_tag`，按配额预占
