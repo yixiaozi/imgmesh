@@ -22,9 +22,11 @@ imgmesh 用来分享旅行照片。发送者在 App 里选多张照片，在本�
 以下条目已冻结。改动需要先改本文。
 
 - 持久化以对象存储为准。密文留在服务端，链接在发送者离线后仍可打开。点对点只在两端同时在线时加速传输，第一版不做。
-- 发送者要账号，接收者不要。发送者用 Sign in with Apple，用来列出和撤销自己的分享。接收者凭链接进入。浏览器打开是匿名的。iOS 存相册时上报这台设备的显示名。
-- 「删除」只指 imgmesh 里的这份分享。存进系统相册之后，系统不提供可靠的删除回执。第一版只上报三种事件：`open`（打开）、`save`（写入系统相册成功）、`remove`（在 imgmesh 收件箱移除）。
-- 事件是尽力而为。持有链接的人可以自己计算访问校验值并上报，因此事件不能当作防抵赖凭证。
+- 每台设备只能注册一次，显示名称全站唯一。注册后名称可以改，但新名称也不能和别人重复。同一台设备再次注册会回到第一次的账号，不会新建第二个。
+- 查看、下载和存相册都要先登记。服务器按注册用户记账，不采用客户端临时填写的名字。
+- 发送和撤销仍要 Sign in with Apple，并且绑在这台已经注册的设备上。
+- 「删除」只指 imgmesh 里的这份分享。存进系统相册之后，系统不提供可靠的删除回执。记录分三类：`view`（查看）、`download`（下载文件）、`save`（写入 iPhone 相册，并留在「在这些手机里」）。`remove` 表示从 imgmesh 收件箱移除，不把手机从「在这些手机里」拿掉。
+- 旧的 `open` 与 `view` 都算查看。浏览器上报的 `save` 记成下载。
 - 第一版只收图片：`image/jpeg`、`image/heic`、`image/heif`、`image/png`、`image/webp`。
 - 单张明文上限 52,428,800 字节（50 MiB）。单次分享最多 200 张原图，原图明文合计最多 2,147,483,648 字节（2 GiB）。
 - 每名发送者的配额先按 5,368,709,120 字节（5 GiB）配置。
@@ -146,9 +148,13 @@ PostgreSQL。标识列存原始字节或存 base64url 均可，但全库只选�
 
 - `users`
   - `id`
-  - `apple_sub`：唯一
-  - `display_name`
+  - `apple_sub`：可空，唯一。绑了 Apple 才能创建和撤销分享
+  - `display_name`：非空时全站唯一，比较时忽略英文字母大小写
   - `created_at`
+- `devices`
+  - `id`：客户端生成一次并放在本机钥匙串或 localStorage，16 到 64 位
+  - `user_id`：一台设备只对应一个用户
+  - `platform`：`ios` 或 `web`
 - `shares`
   - `id`：即 `share_id`
   - `owner_id`
@@ -169,11 +175,17 @@ PostgreSQL。标识列存原始字节或存 base64url 均可，但全库只选�
 - `events`
   - `id`
   - `share_id`
-  - `kind`：`open`、`save`、`remove`
+  - `user_id`
+  - `kind`：`view`、`download`、`save`、`remove`，以及旧数据里的 `open`
   - `client`：`web`、`ios`
-  - `display_name`：可空
-  - `device_id`：可空
+  - `display_name`：当时的注册名称
+  - `device_id`
   - `created_at`
+- `holdings`
+  - `share_id` + `user_id`
+  - `device_id`
+  - `client`
+  - `saved_at`：iPhone 存入相册的时间。从 imgmesh 移除不会删除这条，因为系统相册里的照片还在
 
 对象键建议为 `{share_id_b64}/{object_id_b64}`，不要把密钥或明文文件名放进键。
 
@@ -183,16 +195,19 @@ PostgreSQL。标识列存原始字节或存 base64url 均可，但全库只选�
 
 全部在 `/v1`，由 Nginx 反代到本机 Go 进程。除创建会话和健康检查外，读分享的接口都要求 `X-Imgmesh-Access`。发送者管理接口要求会话。
 
-- `POST /v1/auth/apple`：校验 Sign in with Apple 的 identity token，建立会话
+- `POST /v1/register`：用设备号和名称注册。同一设备再调一次返回原来的用户。名称重复返回 `name_taken`
+- `POST /v1/devices/session`：这台设备已经注册过时换一张会话
+- `GET /v1/me`、`PATCH /v1/me`：查看和修改自己的名称
+- `POST /v1/auth/apple`：校验 Sign in with Apple。带上现有会话时，把 Apple 绑到这个用户；没有会话时仍会建立发送者账号
 - `POST /v1/shares`：创建分享，保存 `access_tag`，按配额预占
 - `POST /v1/shares/{id}/uploads`：为一批对象签发 PUT 预签名。单对象明文超过 16 MiB 时改发 S3 multipart 的分片预签名
 - `POST /v1/shares/{id}/uploads/complete`：核对密文大小，标记对象可读。同一对象重复完成保持成功
 - `GET /v1/shares/{id}`：返回张数、总大小、是否过期或已撤销
 - `GET /v1/shares/{id}/manifest`：返回清单对象 id、`manifest_nonce` 和短时 GET 地址。对象 id 要参与 AAD，所以必须一起返回
 - `GET /v1/shares/{id}/objects/{oid}`：返回该对象的短时 GET 预签名
-- `POST /v1/shares/{id}/events`：上报 `open`、`save`、`remove`
+- `POST /v1/shares/{id}/events`：已注册用户上报 `view`、`download`、`save`、`remove`。名称以服务器上的用户为准
 - `GET /v1/me/shares`：当前发送者的分享列表
-- `GET /v1/shares/{id}/events`：发送者查看 open / save / remove
+- `GET /v1/shares/{id}/events`：发送者查看 `viewed`、`downloaded`、`phones`
 - `DELETE /v1/shares/{id}`：发送者撤销，并删除对象存储中的密文
 
 预签名 PUT 有效期 15 分钟，GET 有效期 5 分钟。客户端把已完成的 multipart part 记在本地，中断后按未完成的 part 续传。

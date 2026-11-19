@@ -1,6 +1,5 @@
 import AuthenticationServices
 import Foundation
-import UIKit
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -12,10 +11,11 @@ final class AppModel: ObservableObject {
     @Published var busy = false
     @Published var selectedID: String?
     @Published var gallery: [GalleryPhoto] = []
-    @Published var events: [APIClient.RemoteEvent] = []
+    @Published var activity = APIClient.ShareActivity(viewed: [], downloaded: [], phones: [])
+    @Published var draftName = ""
 
     let api = APIClient()
-    private let deviceID = UIDevice.current.identifierForVendor?.uuidString ?? UUID().uuidString
+    private var deviceID = KeychainStore.deviceID()
 
     struct GalleryPhoto: Identifiable {
         var id: String
@@ -31,30 +31,88 @@ final class AppModel: ObservableObject {
         shares = ShareLibrary.load()
     }
 
-    func signIn(_ credential: ASAuthorizationAppleIDCredential) async {
-        guard let tokenData = credential.identityToken, let token = String(data: tokenData, encoding: .utf8) else {
-            errorMessage = "没有拿到 Apple 登录凭证。"
+    func restore() async {
+        deviceID = KeychainStore.deviceID()
+        if session != nil { return }
+        do {
+            let resumed = try await api.resume(deviceID: deviceID)
+            store(resumed)
+        } catch let error as APIError {
+            if case .code("not_found") = error { return }
+            errorMessage = apiMessage(error)
+        } catch {
+            errorMessage = apiMessage(error)
+        }
+    }
+
+    func register() async {
+        let name = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else {
+            errorMessage = "先写一个名称。"
             return
         }
-        let name = [credential.fullName?.familyName, credential.fullName?.givenName].compactMap { $0 }.joined()
         do {
-            let loggedIn = try await api.login(identityToken: token, displayName: name)
-            let stored = Session(token: loggedIn.token, displayName: loggedIn.name.isEmpty ? name : loggedIn.name)
-            session = stored
-            KeychainStore.saveSession(stored)
+            let created = try await api.register(deviceID: deviceID, displayName: name)
+            store(created)
+            status = created.alreadyRegistered == true
+                ? "这台设备已经注册为 \(created.user.displayName)。名称保持第一次填写的。"
+                : "已注册为 \(created.user.displayName)。"
             errorMessage = ""
         } catch {
             errorMessage = apiMessage(error)
         }
     }
 
-    func signOut() {
-        session = nil
-        KeychainStore.clearSession()
+    func rename(to name: String) async {
+        guard let token = session?.token else { return }
+        do {
+            let user = try await api.rename(token: token, displayName: name)
+            session?.displayName = user.displayName
+            if let session { KeychainStore.saveSession(session) }
+            status = "名称已改为 \(user.displayName)。"
+            errorMessage = ""
+        } catch {
+            errorMessage = apiMessage(error)
+        }
+    }
+
+    func signIn(_ credential: ASAuthorizationAppleIDCredential) async {
+        guard let tokenData = credential.identityToken, let token = String(data: tokenData, encoding: .utf8) else {
+            errorMessage = "没有拿到 Apple 登录凭证。"
+            return
+        }
+        guard session != nil else {
+            errorMessage = "先登记这台设备的名称。"
+            return
+        }
+        let name = [credential.fullName?.familyName, credential.fullName?.givenName].compactMap { $0 }.joined()
+        do {
+            let loggedIn = try await api.login(existingToken: session?.token, identityToken: token, displayName: name)
+            store(loggedIn)
+            status = "Apple 登录已连到 \(loggedIn.user.displayName)。现在可以分享照片。"
+            errorMessage = ""
+        } catch {
+            errorMessage = apiMessage(error)
+        }
+    }
+
+    private func store(_ account: APIClient.Account) {
+        let stored = Session(
+            token: account.token,
+            displayName: account.user.displayName,
+            appleLinked: account.user.appleLinked,
+            deviceID: account.user.deviceId.isEmpty ? deviceID : account.user.deviceId
+        )
+        session = stored
+        KeychainStore.saveSession(stored)
     }
 
     func createShare(providers: [NSItemProvider], title: String) async {
         guard let session else {
+            errorMessage = "先登记这台设备的名称。"
+            return
+        }
+        guard session.appleLinked else {
             errorMessage = "先用 Apple 登录，再分享照片。"
             return
         }
@@ -214,14 +272,18 @@ final class AppModel: ObservableObject {
 
     func loadGallery(_ share: LocalShare) async {
         gallery = []
-        events = []
+        activity = APIClient.ShareActivity(viewed: [], downloaded: [], phones: [])
         status = "正在解密"
         errorMessage = ""
+        guard let token = session?.token else {
+            errorMessage = "先登记这台设备的名称。"
+            return
+        }
         do {
             let shareID = try ImgmeshSeal.decode(share.id)
             let master = try ImgmeshSeal.decode(share.masterKey)
             let access = ImgmeshSeal.encode(try ImgmeshSeal.accessTag(master: master, shareID: shareID))
-            let listed = try await api.manifest(shareID: share.id, access: access)
+            let listed = try await api.manifest(token: token, shareID: share.id, access: access)
             let manifestKey = try ImgmeshSeal.derive(master: master, shareID: shareID, info: "imgmesh-manifest-v1")
             let manifestCipher = try await api.download(listed.url)
             let plain = try ImgmeshSeal.decrypt(
@@ -236,7 +298,7 @@ final class AppModel: ObservableObject {
             for item in manifest.items {
                 var preview: Data?
                 if let thumb = item.thumb {
-                    let cipher = try await api.download(try await api.objectURL(shareID: share.id, objectID: thumb.id, access: access))
+                    let cipher = try await api.download(try await api.objectURL(token: token, shareID: share.id, objectID: thumb.id, access: access))
                     preview = try? ImgmeshSeal.decrypt(
                         key: fileKey,
                         nonce: try ImgmeshSeal.decode(thumb.nonce),
@@ -253,9 +315,9 @@ final class AppModel: ObservableObject {
                 ShareLibrary.save(shares)
             }
             status = "\(photos.count) 张照片"
-            try? await api.record(shareID: share.id, access: access, kind: "open", name: senderName, deviceID: deviceID)
-            if share.role == "sent", let token = session?.token {
-                events = (try? await api.events(token: token, shareID: share.id)) ?? []
+            try? await api.record(token: token, shareID: share.id, access: access, kind: "view")
+            if share.role == "sent" {
+                activity = (try? await api.activity(token: token, shareID: share.id)) ?? activity
             }
         } catch {
             status = ""
@@ -272,7 +334,9 @@ final class AppModel: ObservableObject {
             let shareID = try ImgmeshSeal.decode(share.id)
             let master = try ImgmeshSeal.decode(share.masterKey)
             let access = ImgmeshSeal.encode(try ImgmeshSeal.accessTag(master: master, shareID: shareID))
-            try? await api.record(shareID: share.id, access: access, kind: "save", name: senderName, deviceID: deviceID)
+            if let token = session?.token {
+                try? await api.record(token: token, shareID: share.id, access: access, kind: "save")
+            }
             status = "已经存进相册。"
             errorMessage = ""
         } catch {
@@ -283,7 +347,9 @@ final class AppModel: ObservableObject {
     func remove(_ share: LocalShare) async {
         if let shareID = try? ImgmeshSeal.decode(share.id), let master = try? ImgmeshSeal.decode(share.masterKey),
            let access = try? ImgmeshSeal.encode(ImgmeshSeal.accessTag(master: master, shareID: shareID)) {
-            try? await api.record(shareID: share.id, access: access, kind: "remove", name: senderName, deviceID: deviceID)
+            if let token = session?.token {
+                try? await api.record(token: token, shareID: share.id, access: access, kind: "remove")
+            }
         }
         shares.removeAll { $0.id == share.id }
         ShareLibrary.save(shares)
@@ -304,9 +370,8 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private var senderName: String { session?.displayName.isEmpty == false ? session!.displayName : "iPhone" }
-
     private func originals(_ share: LocalShare) async throws -> [Data] {
+        guard let token = session?.token else { throw APIError.transport("先登记这台设备的名称。") }
         let shareID = try ImgmeshSeal.decode(share.id)
         let master = try ImgmeshSeal.decode(share.masterKey)
         let access = ImgmeshSeal.encode(try ImgmeshSeal.accessTag(master: master, shareID: shareID))
@@ -314,7 +379,7 @@ final class AppModel: ObservableObject {
         let items = gallery.map(\.item)
         var images: [Data] = []
         for item in items {
-            let cipher = try await api.download(try await api.objectURL(shareID: share.id, objectID: item.id, access: access))
+            let cipher = try await api.download(try await api.objectURL(token: token, shareID: share.id, objectID: item.id, access: access))
             images.append(try ImgmeshSeal.decrypt(
                 key: fileKey,
                 nonce: try ImgmeshSeal.decode(item.nonce),

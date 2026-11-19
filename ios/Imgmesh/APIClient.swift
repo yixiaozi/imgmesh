@@ -8,16 +8,42 @@ enum APIError: Error {
 struct APIClient {
     var baseURL = URL(string: "https://imgmesh.com")!
 
-    func login(identityToken: String, displayName: String) async throws -> (token: String, name: String) {
-        struct Body: Decodable {
-            var token: String
-            var user: User
-            struct User: Decodable { var displayName: String }
-        }
-        let body: Body = try await send(path: "/v1/auth/apple", method: "POST", token: nil, access: nil, payload: [
+    struct Account: Decodable {
+        var token: String
+        var alreadyRegistered: Bool?
+        var user: AccountUser
+    }
+
+    struct AccountUser: Decodable {
+        var displayName: String
+        var appleLinked: Bool
+        var deviceId: String
+    }
+
+    func register(deviceID: String, displayName: String) async throws -> Account {
+        try await send(path: "/v1/register", method: "POST", token: nil, access: nil, payload: [
+            "deviceId": deviceID, "displayName": displayName, "platform": "ios",
+        ])
+    }
+
+    func resume(deviceID: String) async throws -> Account {
+        try await send(path: "/v1/devices/session", method: "POST", token: nil, access: nil, payload: [
+            "deviceId": deviceID,
+        ])
+    }
+
+    func rename(token: String, displayName: String) async throws -> AccountUser {
+        struct Body: Decodable { var user: AccountUser }
+        let body: Body = try await send(path: "/v1/me", method: "PATCH", token: token, access: nil, payload: [
+            "displayName": displayName,
+        ])
+        return body.user
+    }
+
+    func login(existingToken: String?, identityToken: String, displayName: String) async throws -> Account {
+        try await send(path: "/v1/auth/apple", method: "POST", token: existingToken, access: nil, payload: [
             "identityToken": identityToken, "displayName": displayName,
         ])
-        return (body.token, body.user.displayName)
     }
 
     func createShare(token: String, id: String, accessTag: String) async throws {
@@ -70,18 +96,23 @@ struct APIClient {
         try await sendEmpty(path: "/v1/shares/\(shareID)", method: "DELETE", token: token, access: nil, payload: nil)
     }
 
-    struct RemoteEvent: Decodable, Identifiable {
-        var kind: String
-        var client: String
+    struct ActivityRow: Decodable, Identifiable {
         var displayName: String
-        var createdAt: String
-        var id: String { kind + createdAt + displayName + client }
+        var client: String
+        var count: Int?
+        var at: String?
+        var savedAt: String?
+        var id: String { displayName + client + (at ?? "") + (savedAt ?? "") + String(count ?? 0) }
     }
 
-    func events(token: String, shareID: String) async throws -> [RemoteEvent] {
-        struct Body: Decodable { var events: [RemoteEvent] }
-        let body: Body = try await send(path: "/v1/shares/\(shareID)/events", method: "GET", token: token, access: nil, payload: nil)
-        return body.events
+    struct ShareActivity: Decodable {
+        var viewed: [ActivityRow]
+        var downloaded: [ActivityRow]
+        var phones: [ActivityRow]
+    }
+
+    func activity(token: String, shareID: String) async throws -> ShareActivity {
+        try await send(path: "/v1/shares/\(shareID)/events", method: "GET", token: token, access: nil, payload: nil)
     }
 
     struct ListedManifest: Decodable {
@@ -90,20 +121,20 @@ struct APIClient {
         var url: String
     }
 
-    func manifest(shareID: String, access: String) async throws -> ListedManifest {
-        try await send(path: "/v1/shares/\(shareID)/manifest", method: "GET", token: nil, access: access, payload: nil)
+    func manifest(token: String, shareID: String, access: String) async throws -> ListedManifest {
+        try await send(path: "/v1/shares/\(shareID)/manifest", method: "GET", token: token, access: access, payload: nil)
     }
 
-    func objectURL(shareID: String, objectID: String, access: String) async throws -> URL {
+    func objectURL(token: String, shareID: String, objectID: String, access: String) async throws -> URL {
         struct Body: Decodable { var url: String }
-        let body: Body = try await send(path: "/v1/shares/\(shareID)/objects/\(objectID)", method: "GET", token: nil, access: access, payload: nil)
+        let body: Body = try await send(path: "/v1/shares/\(shareID)/objects/\(objectID)", method: "GET", token: token, access: access, payload: nil)
         guard let url = URL(string: body.url) else { throw APIError.transport("下载地址无效") }
         return url
     }
 
-    func record(shareID: String, access: String, kind: String, name: String, deviceID: String) async throws {
-        try await sendEmpty(path: "/v1/shares/\(shareID)/events", method: "POST", token: nil, access: access, payload: [
-            "kind": kind, "client": "ios", "displayName": name, "deviceId": deviceID,
+    func record(token: String, shareID: String, access: String, kind: String) async throws {
+        try await sendEmpty(path: "/v1/shares/\(shareID)/events", method: "POST", token: token, access: access, payload: [
+            "kind": kind, "client": "ios",
         ])
     }
 
@@ -172,6 +203,9 @@ func apiMessage(_ error: Error) -> String {
         case "revoked": return "这份分享已经撤销。"
         case "expired": return "这份分享已经过期。"
         case "not_found": return "没有找到这份分享。"
+        case "name_taken": return "这个名称已经有人用了，换一个。"
+        case "name_required": return "先登记一个名称。"
+        case "apple_required": return "先用 Apple 登录，再分享照片。"
         default: return "请求没有完成。"
         }
     }

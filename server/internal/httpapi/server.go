@@ -64,10 +64,14 @@ func (s *Server) Handler() http.Handler {
 	r.Route("/v1", func(r chi.Router) {
 		r.Get("/health", s.health)
 		r.Post("/auth/apple", s.authApple)
+		r.Post("/register", s.register)
+		r.Post("/devices/session", s.deviceSession)
 		r.Put("/direct/{token}", s.directPut)
 		r.Get("/direct/{token}", s.directGet)
 		r.Group(func(r chi.Router) {
 			r.Use(s.withUser)
+			r.Get("/me", s.me)
+			r.Patch("/me", s.rename)
 			r.Post("/shares", s.createShare)
 			r.Get("/me/shares", s.listMine)
 			r.Post("/shares/{id}/uploads", s.uploads)
@@ -107,10 +111,94 @@ func (s *Server) authApple(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, errBody{"unauthorized"})
 		return
 	}
-	userID, name, err := s.Store.UpsertAppleUser(r.Context(), sub, cleanName(body.DisplayName))
+	if uid, ok := s.optionalUser(r); ok {
+		if err := s.Store.BindApple(r.Context(), uid, sub); err != nil {
+			writeStoreErr(w, err)
+			return
+		}
+		s.writeSession(w, r, uid, false)
+		return
+	}
+	userID, _, err := s.Store.UpsertAppleUser(r.Context(), sub, cleanName(body.DisplayName))
 	if err != nil {
-		log.Printf("upsert user: %v", err)
-		writeJSON(w, http.StatusInternalServerError, errBody{"internal"})
+		writeStoreErr(w, err)
+		return
+	}
+	s.writeSession(w, r, userID, false)
+}
+
+func (s *Server) register(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		DeviceID    string `json:"deviceId"`
+		DisplayName string `json:"displayName"`
+		Platform    string `json:"platform"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	if !validDevice(body.DeviceID) || (body.Platform != "ios" && body.Platform != "web") {
+		writeJSON(w, http.StatusBadRequest, errBody{"bad_request"})
+		return
+	}
+	name, ok := normalizeName(body.DisplayName)
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, errBody{"bad_request"})
+		return
+	}
+	userID, _, already, err := s.Store.RegisterDevice(r.Context(), body.DeviceID, name, body.Platform)
+	if err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	s.writeSession(w, r, userID, already)
+}
+
+func (s *Server) deviceSession(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		DeviceID string `json:"deviceId"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	if !validDevice(body.DeviceID) {
+		writeJSON(w, http.StatusBadRequest, errBody{"bad_request"})
+		return
+	}
+	userID, _, err := s.Store.DeviceUser(r.Context(), body.DeviceID)
+	if err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	s.writeSession(w, r, userID, true)
+}
+
+func (s *Server) me(w http.ResponseWriter, r *http.Request) {
+	s.writeProfile(w, r, userID(r))
+}
+
+func (s *Server) rename(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		DisplayName string `json:"displayName"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	name, ok := normalizeName(body.DisplayName)
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, errBody{"bad_request"})
+		return
+	}
+	if err := s.Store.Rename(r.Context(), userID(r), name); err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	s.writeProfile(w, r, userID(r))
+}
+
+func (s *Server) writeSession(w http.ResponseWriter, r *http.Request, userID string, already bool) {
+	profile, err := s.Store.Profile(r.Context(), userID)
+	if err != nil {
+		writeStoreErr(w, err)
 		return
 	}
 	token, err := s.Store.CreateSession(r.Context(), userID, 30*24*time.Hour)
@@ -119,10 +207,33 @@ func (s *Server) authApple(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, errBody{"internal"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"token": token,
-		"user":  map[string]string{"id": userID, "displayName": name},
+	status := http.StatusOK
+	if !already && r.URL.Path == "/v1/register" {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, map[string]any{
+		"token":             token,
+		"alreadyRegistered": already,
+		"user":              profileJSON(profile),
 	})
+}
+
+func (s *Server) writeProfile(w http.ResponseWriter, r *http.Request, userID string) {
+	profile, err := s.Store.Profile(r.Context(), userID)
+	if err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user": profileJSON(profile)})
+}
+
+func profileJSON(p store.Profile) map[string]any {
+	return map[string]any{
+		"id":          p.ID,
+		"displayName": p.DisplayName,
+		"appleLinked": p.AppleLinked,
+		"deviceId":    p.DeviceID,
+	}
 }
 
 func (s *Server) createShare(w http.ResponseWriter, r *http.Request) {
@@ -146,6 +257,15 @@ func (s *Server) createShare(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.ExpiresAt != nil && !body.ExpiresAt.After(time.Now()) {
 		writeJSON(w, http.StatusBadRequest, errBody{"bad_request"})
+		return
+	}
+	profile, err := s.Store.Profile(r.Context(), userID(r))
+	if err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	if !profile.AppleLinked {
+		writeJSON(w, http.StatusForbidden, errBody{"apple_required"})
 		return
 	}
 	if err := s.Store.CreateShare(r.Context(), userID(r), shareID, tag, body.ExpiresAt); err != nil {
@@ -439,22 +559,49 @@ func (s *Server) listEvents(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	events, err := s.Store.Events(r.Context(), shareID)
+	act, err := s.Store.Activity(r.Context(), shareID)
 	if err != nil {
 		writeStoreErr(w, err)
 		return
 	}
-	out := make([]any, 0, len(events))
-	for _, e := range events {
-		out = append(out, map[string]any{
-			"kind": e.Kind, "client": e.Client, "displayName": e.DisplayName,
-			"deviceId": e.DeviceID, "createdAt": e.CreatedAt,
+	events := make([]any, 0, len(act.Events))
+	for _, e := range act.Events {
+		events = append(events, map[string]any{
+			"kind": e.Kind, "client": e.Client, "displayName": e.DisplayName, "createdAt": e.CreatedAt,
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"events": out})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"events":     events,
+		"viewed":     peopleJSON(act.Viewed),
+		"downloaded": peopleJSON(act.Downloaded),
+		"phones":     phonesJSON(act.Phones),
+	})
+}
+
+func peopleJSON(list []store.Person) []any {
+	out := make([]any, 0, len(list))
+	for _, p := range list {
+		out = append(out, map[string]any{
+			"displayName": p.DisplayName, "client": p.Client, "count": p.Count, "at": p.At,
+		})
+	}
+	return out
+}
+
+func phonesJSON(list []store.Holding) []any {
+	out := make([]any, 0, len(list))
+	for _, p := range list {
+		out = append(out, map[string]any{
+			"displayName": p.DisplayName, "client": p.Client, "savedAt": p.SavedAt,
+		})
+	}
+	return out
 }
 
 func (s *Server) getShare(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireUser(w, r); !ok {
+		return
+	}
 	sh := shareFrom(r)
 	writeJSON(w, http.StatusOK, shareJSON(sh))
 }
@@ -463,6 +610,9 @@ func (s *Server) manifest(w http.ResponseWriter, r *http.Request) {
 	sh := shareFrom(r)
 	if err := sh.Unavailable(); err != nil {
 		writeStoreErr(w, err)
+		return
+	}
+	if _, ok := s.requireUser(w, r); !ok {
 		return
 	}
 	if len(sh.ManifestObjectID) == 0 || len(sh.ManifestNonce) != 12 {
@@ -491,6 +641,9 @@ func (s *Server) objectURL(w http.ResponseWriter, r *http.Request) {
 	sh := shareFrom(r)
 	if err := sh.Unavailable(); err != nil {
 		writeStoreErr(w, err)
+		return
+	}
+	if _, ok := s.requireUser(w, r); !ok {
 		return
 	}
 	oid, err := id.Decode16(chi.URLParam(r, "oid"))
@@ -522,6 +675,10 @@ func (s *Server) addEvent(w http.ResponseWriter, r *http.Request) {
 		writeStoreErr(w, err)
 		return
 	}
+	uid, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
 	var body struct {
 		Kind        string `json:"kind"`
 		Client      string `json:"client"`
@@ -531,8 +688,12 @@ func (s *Server) addEvent(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &body) {
 		return
 	}
-	switch body.Kind {
-	case "open", "save", "remove":
+	kind := body.Kind
+	if kind == "open" {
+		kind = "view"
+	}
+	switch kind {
+	case "view", "download", "save", "remove":
 	default:
 		writeJSON(w, http.StatusBadRequest, errBody{"bad_request"})
 		return
@@ -543,9 +704,11 @@ func (s *Server) addEvent(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errBody{"bad_request"})
 		return
 	}
-	if err := s.Store.AddEvent(r.Context(), sh.ID, body.Kind, body.Client, cleanName(body.DisplayName), cleanDevice(body.DeviceID)); err != nil {
-		log.Printf("event: %v", err)
-		writeJSON(w, http.StatusInternalServerError, errBody{"internal"})
+	if kind == "save" && body.Client != "ios" {
+		kind = "download"
+	}
+	if err := s.Store.AddEvent(r.Context(), sh.ID, uid, kind, body.Client); err != nil {
+		writeStoreErr(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -629,19 +792,34 @@ func (s *Server) aasa(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) withUser(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		header := r.Header.Get("Authorization")
-		token, ok := strings.CutPrefix(header, "Bearer ")
-		if !ok || token == "" || strings.Contains(token, " ") {
-			writeJSON(w, http.StatusUnauthorized, errBody{"unauthorized"})
-			return
-		}
-		uid, _, err := s.Store.UserByToken(r.Context(), token)
-		if err != nil {
+		uid, ok := s.optionalUser(r)
+		if !ok {
 			writeJSON(w, http.StatusUnauthorized, errBody{"unauthorized"})
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxUser, uid)))
 	})
+}
+
+func (s *Server) optionalUser(r *http.Request) (string, bool) {
+	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !ok || token == "" || strings.Contains(token, " ") {
+		return "", false
+	}
+	uid, _, err := s.Store.UserByToken(r.Context(), token)
+	if err != nil {
+		return "", false
+	}
+	return uid, true
+}
+
+func (s *Server) requireUser(w http.ResponseWriter, r *http.Request) (string, bool) {
+	uid, ok := s.optionalUser(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, errBody{"unauthorized"})
+		return "", false
+	}
+	return uid, true
 }
 
 func (s *Server) withAccess(next http.Handler) http.Handler {
@@ -739,6 +917,10 @@ func writeStoreErr(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		writeJSON(w, http.StatusNotFound, errBody{"not_found"})
+	case errors.Is(err, store.ErrNameTaken):
+		writeJSON(w, http.StatusConflict, errBody{"name_taken"})
+	case errors.Is(err, store.ErrNameRequired):
+		writeJSON(w, http.StatusConflict, errBody{"name_required"})
 	case errors.Is(err, store.ErrConflict):
 		writeJSON(w, http.StatusConflict, errBody{"conflict"})
 	case errors.Is(err, store.ErrQuota):
@@ -760,6 +942,36 @@ func writeStoreErr(w http.ResponseWriter, err error) {
 		log.Printf("store: %v", err)
 		writeJSON(w, http.StatusInternalServerError, errBody{"internal"})
 	}
+}
+
+func normalizeName(s string) (string, bool) {
+	s = strings.Join(strings.Fields(s), " ")
+	if s == "" {
+		return "", false
+	}
+	n := 0
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			return "", false
+		}
+		n++
+	}
+	if n > 24 {
+		return "", false
+	}
+	return s, true
+}
+
+func validDevice(s string) bool {
+	if len(s) < 16 || len(s) > 64 {
+		return false
+	}
+	for _, r := range s {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' && r != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 func cleanName(s string) string {

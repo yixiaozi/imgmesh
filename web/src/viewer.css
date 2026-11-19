@@ -7,6 +7,12 @@
   --foam: #b8d4d2;
 }
 
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
 body {
   margin: 0;
   min-height: 100vh;
@@ -57,9 +63,74 @@ body {
 
 .viewer-bar {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
-  gap: 1rem;
+  gap: 0.8rem 1rem;
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: 1.1rem 1.25rem 0;
+}
+
+.rename,
+.account {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.rename .btn {
+  background: rgba(255, 255, 255, 0.85);
+  color: var(--ocean-deep);
+  border: 1px solid rgba(14, 107, 110, 0.28);
+}
+
+.account {
+  display: grid;
+  max-width: 24rem;
+  margin-top: 1rem;
+}
+
+.rename label,
+.account label {
+  display: grid;
+  gap: 0.25rem;
+  color: var(--ink-soft);
+  font-size: 0.92rem;
+}
+
+.rename input,
+.account input {
+  font: inherit;
+  color: var(--ink);
+  width: min(16rem, 100%);
+  min-height: 2.7rem;
+  padding: 0.45rem 0.7rem;
+  border-radius: 0.55rem;
+  border: 1px solid rgba(14, 107, 110, 0.28);
+  background: rgba(255, 255, 255, 0.8);
+}
+
+.account-error {
+  min-height: 1.4rem;
+  margin: 0;
+  color: #8a3d32;
+}
+
+.activity {
+  margin-top: 2rem;
+}
+
+.activity h2,
+.activity h3 {
+  margin: 1.1rem 0 0.35rem;
+}
+
+.activity ul {
+  margin: 0;
+  padding-left: 1.15rem;
+  color: var(--ink-soft);
 }
 
 .viewer h1 {

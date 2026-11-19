@@ -177,7 +177,7 @@ func TestShareSaveAndRead(t *testing.T) {
 		t.Fatal("plaintext leaked into object storage")
 	}
 
-	res = do(t, client, http.MethodGet, base+"/v1/shares/"+id.Encode(shareID)+"/manifest", "", id.Encode(access), nil)
+	res = do(t, client, http.MethodGet, base+"/v1/shares/"+id.Encode(shareID)+"/manifest", token, id.Encode(access), nil)
 	if res.StatusCode != 200 {
 		t.Fatalf("manifest %d %s", res.StatusCode, readBody(res))
 	}
@@ -196,7 +196,7 @@ func TestShareSaveAndRead(t *testing.T) {
 		t.Fatalf("manifest decrypt %v %q", err, opened)
 	}
 
-	res = do(t, client, http.MethodGet, base+"/v1/shares/"+id.Encode(shareID)+"/objects/"+id.Encode(objectID), "", id.Encode(access), nil)
+	res = do(t, client, http.MethodGet, base+"/v1/shares/"+id.Encode(shareID)+"/objects/"+id.Encode(objectID), token, id.Encode(access), nil)
 	var obj struct {
 		URL string `json:"url"`
 	}
@@ -212,15 +212,16 @@ func TestShareSaveAndRead(t *testing.T) {
 	if res.StatusCode != 401 {
 		t.Fatalf("missing tag %d", res.StatusCode)
 	}
-	res = do(t, client, http.MethodPost, base+"/v1/shares/"+id.Encode(shareID)+"/events", "", id.Encode(access), map[string]any{
+	res = do(t, client, http.MethodPost, base+"/v1/shares/"+id.Encode(shareID)+"/events", token, id.Encode(access), map[string]any{
 		"kind": "save", "client": "ios", "displayName": "旅行的人",
 	})
 	if res.StatusCode != 204 {
 		t.Fatalf("event %d %s", res.StatusCode, readBody(res))
 	}
 	res = do(t, client, http.MethodGet, base+"/v1/shares/"+id.Encode(shareID)+"/events", token, "", nil)
-	if res.StatusCode != 200 || !bytes.Contains(readBody(res), []byte("save")) {
-		t.Fatalf("events missing")
+	body := readBody(res)
+	if res.StatusCode != 200 || !bytes.Contains(body, []byte("save")) || !bytes.Contains(body, []byte("phones")) || !bytes.Contains(body, []byte("发送者")) {
+		t.Fatalf("events missing: %s", body)
 	}
 
 	res = do(t, client, http.MethodDelete, base+"/v1/shares/"+id.Encode(shareID), token, "", nil)
@@ -233,6 +234,193 @@ func TestShareSaveAndRead(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, id.Encode(shareID), id.Encode(objectID))); !os.IsNotExist(err) {
 		t.Fatal("ciphertext should be removed on revoke")
+	}
+}
+
+func TestRegisterOnceAndActivity(t *testing.T) {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		dsn = "postgres:///imgmesh_test?host=/var/run/postgresql"
+	}
+	ctx := context.Background()
+	st, err := store.Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(st.Close)
+	if err := st.Reset(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := "http://" + ln.Addr().String()
+	dir := t.TempDir()
+	disk, err := blob.NewDisk(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := &Server{
+		Store: st, Disk: disk, Secret: bytes.Repeat([]byte{7}, 32), PublicBaseURL: base,
+		Apple: fakeApple{"good-token": "sender-sub"}, DiskFreeMin: 1,
+	}
+	srv := &http.Server{Handler: api.Handler()}
+	go srv.Serve(ln)
+	t.Cleanup(func() { srv.Close() })
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	res := do(t, client, http.MethodPost, base+"/v1/register", "", "", map[string]string{
+		"deviceId": "device-one-aaaaaa", "displayName": "小林", "platform": "ios",
+	})
+	if res.StatusCode != 201 {
+		t.Fatalf("register %d %s", res.StatusCode, readBody(res))
+	}
+	var first struct {
+		Token string `json:"token"`
+		User  struct {
+			DisplayName string `json:"displayName"`
+		} `json:"user"`
+	}
+	json.NewDecoder(res.Body).Decode(&first)
+	res.Body.Close()
+
+	res = do(t, client, http.MethodPost, base+"/v1/register", "", "", map[string]string{
+		"deviceId": "device-one-aaaaaa", "displayName": "另一个名字", "platform": "ios",
+	})
+	var again struct {
+		Already bool `json:"alreadyRegistered"`
+		User    struct {
+			DisplayName string `json:"displayName"`
+		} `json:"user"`
+	}
+	json.NewDecoder(res.Body).Decode(&again)
+	res.Body.Close()
+	if res.StatusCode != 200 || !again.Already || again.User.DisplayName != "小林" {
+		t.Fatalf("second register %+v", again)
+	}
+
+	res = do(t, client, http.MethodPost, base+"/v1/register", "", "", map[string]string{
+		"deviceId": "device-two-bbbbbb", "displayName": "小林", "platform": "web",
+	})
+	if res.StatusCode != 409 || !bytes.Contains(readBody(res), []byte("name_taken")) {
+		t.Fatal("duplicate name should be rejected")
+	}
+
+	res = do(t, client, http.MethodPatch, base+"/v1/me", first.Token, "", map[string]string{"displayName": "阿宁"})
+	if res.StatusCode != 200 {
+		t.Fatalf("rename %d %s", res.StatusCode, readBody(res))
+	}
+	res = do(t, client, http.MethodPost, base+"/v1/register", "", "", map[string]string{
+		"deviceId": "device-two-bbbbbb", "displayName": "小林", "platform": "web",
+	})
+	if res.StatusCode != 201 {
+		t.Fatalf("other device %d %s", res.StatusCode, readBody(res))
+	}
+	var viewer struct {
+		Token string `json:"token"`
+	}
+	json.NewDecoder(res.Body).Decode(&viewer)
+	res.Body.Close()
+
+	sender := auth(t, client, base)
+	master := bytes.Repeat([]byte{0x11}, 32)
+	shareID := bytes.Repeat([]byte{0x7a}, 16)
+	access, err := seal.AccessTag(master, shareID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res = do(t, client, http.MethodPost, base+"/v1/shares", sender, "", map[string]any{
+		"id": id.Encode(shareID), "accessTag": id.Encode(access),
+	})
+	if res.StatusCode != 200 {
+		t.Fatalf("create %d %s", res.StatusCode, readBody(res))
+	}
+	plain := []byte("hello-photo")
+	objectID := bytes.Repeat([]byte{0x33}, 16)
+	nonce := bytes.Repeat([]byte{0x44}, 12)
+	fileKey, _ := seal.Derive(master, shareID, seal.InfoFile)
+	aad, _ := seal.AAD(shareID, objectID)
+	ct, err := seal.Encrypt(fileKey, nonce, aad, plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestBody := []byte(`{"v":1,"title":"t","items":[]}`)
+	manifestID := bytes.Repeat([]byte{0x55}, 16)
+	manifestNonce := bytes.Repeat([]byte{0x66}, 12)
+	manifestKey, _ := seal.Derive(master, shareID, seal.InfoManifest)
+	manifestAAD, _ := seal.AAD(shareID, manifestID)
+	manifestCT, err := seal.Encrypt(manifestKey, manifestNonce, manifestAAD, manifestBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res = do(t, client, http.MethodPost, base+"/v1/shares/"+id.Encode(shareID)+"/uploads", sender, "", map[string]any{
+		"objects": []any{
+			map[string]any{"id": id.Encode(objectID), "kind": "original", "plaintextBytes": len(plain), "ciphertextBytes": len(ct)},
+			map[string]any{"id": id.Encode(manifestID), "kind": "manifest", "plaintextBytes": len(manifestBody), "ciphertextBytes": len(manifestCT)},
+		},
+	})
+	if res.StatusCode != 200 {
+		t.Fatalf("uploads %d %s", res.StatusCode, readBody(res))
+	}
+	var planned struct {
+		Uploads []struct {
+			ID    string `json:"id"`
+			Parts []struct {
+				PartNumber int    `json:"partNumber"`
+				URL        string `json:"url"`
+			} `json:"parts"`
+		} `json:"uploads"`
+	}
+	json.NewDecoder(res.Body).Decode(&planned)
+	res.Body.Close()
+	blobs := map[string][]byte{id.Encode(objectID): ct, id.Encode(manifestID): manifestCT}
+	for _, up := range planned.Uploads {
+		for _, part := range up.Parts {
+			req, _ := http.NewRequest(http.MethodPut, part.URL, bytes.NewReader(blobs[up.ID]))
+			putRes, err := client.Do(req)
+			if err != nil || putRes.StatusCode != 200 {
+				t.Fatalf("put %v", err)
+			}
+			putRes.Body.Close()
+		}
+	}
+	res = do(t, client, http.MethodPost, base+"/v1/shares/"+id.Encode(shareID)+"/uploads/complete", sender, "", map[string]any{
+		"objects": []any{
+			map[string]any{"id": id.Encode(objectID), "byteSize": len(ct)},
+			map[string]any{"id": id.Encode(manifestID), "byteSize": len(manifestCT)},
+		},
+		"manifestObjectId": id.Encode(manifestID),
+		"manifestNonce":    id.Encode(manifestNonce),
+	})
+	if res.StatusCode != 204 {
+		t.Fatalf("complete %d %s", res.StatusCode, readBody(res))
+	}
+
+	res = do(t, client, http.MethodGet, base+"/v1/shares/"+id.Encode(shareID)+"/manifest", "", id.Encode(access), nil)
+	if res.StatusCode != 401 {
+		t.Fatalf("anonymous manifest %d", res.StatusCode)
+	}
+	res = do(t, client, http.MethodGet, base+"/v1/shares/"+id.Encode(shareID)+"/manifest", viewer.Token, id.Encode(access), nil)
+	if res.StatusCode != 200 {
+		t.Fatalf("viewer manifest %d %s", res.StatusCode, readBody(res))
+	}
+	res.Body.Close()
+	for _, kind := range []string{"view", "download", "save"} {
+		res = do(t, client, http.MethodPost, base+"/v1/shares/"+id.Encode(shareID)+"/events", viewer.Token, id.Encode(access), map[string]string{
+			"kind": kind, "client": "ios", "displayName": "假名字",
+		})
+		if res.StatusCode != 204 {
+			t.Fatalf("event %s %d %s", kind, res.StatusCode, readBody(res))
+		}
+	}
+	res = do(t, client, http.MethodGet, base+"/v1/shares/"+id.Encode(shareID)+"/events", sender, "", nil)
+	recorded := readBody(res)
+	if res.StatusCode != 200 || !bytes.Contains(recorded, []byte("小林")) || bytes.Contains(recorded, []byte("假名字")) {
+		t.Fatalf("activity should use the registered name: %s", recorded)
+	}
+	if !bytes.Contains(recorded, []byte(`"phones"`)) || !bytes.Contains(recorded, []byte(`"downloaded"`)) || !bytes.Contains(recorded, []byte(`"viewed"`)) {
+		t.Fatalf("activity lists missing: %s", recorded)
 	}
 }
 

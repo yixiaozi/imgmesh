@@ -4,6 +4,23 @@ import Security
 struct Session: Codable {
     var token: String
     var displayName: String
+    var appleLinked: Bool
+    var deviceID: String
+
+    init(token: String, displayName: String, appleLinked: Bool, deviceID: String) {
+        self.token = token
+        self.displayName = displayName
+        self.appleLinked = appleLinked
+        self.deviceID = deviceID
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        token = try container.decode(String.self, forKey: .token)
+        displayName = try container.decodeIfPresent(String.self, forKey: .displayName) ?? ""
+        appleLinked = try container.decodeIfPresent(Bool.self, forKey: .appleLinked) ?? true
+        deviceID = try container.decodeIfPresent(String.self, forKey: .deviceID) ?? ""
+    }
 }
 
 struct LocalShare: Codable, Identifiable {
@@ -47,10 +64,48 @@ enum KeychainStore {
     }
 
     static func clearSession() {
+        delete("session")
+    }
+
+    static func deviceID() -> String {
+        if let existing = loadString("device"), existing.count >= 16 { return existing }
+        let created = UUID().uuidString.lowercased()
+        saveString("device", created)
+        return created
+    }
+
+    private static func saveString(_ account: String, _ value: String) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: "session",
+            kSecAttrAccount as String: account,
+        ]
+        SecItemDelete(query as CFDictionary)
+        var add = query
+        add[kSecValueData as String] = Data(value.utf8)
+        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        SecItemAdd(add as CFDictionary, nil)
+    }
+
+    private static func loadString(_ account: String) -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+        ]
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+              let data = item as? Data
+        else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    private static func delete(_ account: String) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
         ]
         SecItemDelete(query as CFDictionary)
     }

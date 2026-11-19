@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/yixiaozi/imgmesh/server/internal/id"
 )
@@ -30,12 +31,14 @@ const (
 )
 
 var (
-	ErrNotFound = errors.New("not found")
-	ErrConflict = errors.New("conflict")
-	ErrQuota    = errors.New("quota")
-	ErrLimit    = errors.New("limit")
-	ErrGone     = errors.New("gone")
-	ErrBad      = errors.New("bad request")
+	ErrNotFound     = errors.New("not found")
+	ErrConflict     = errors.New("conflict")
+	ErrNameTaken    = errors.New("name taken")
+	ErrNameRequired = errors.New("name required")
+	ErrQuota        = errors.New("quota")
+	ErrLimit        = errors.New("limit")
+	ErrGone         = errors.New("gone")
+	ErrBad          = errors.New("bad request")
 )
 
 type Store struct {
@@ -83,6 +86,34 @@ type Event struct {
 	CreatedAt   time.Time
 }
 
+type Profile struct {
+	ID          string
+	DisplayName string
+	AppleLinked bool
+	DeviceID    string
+	Platform    string
+}
+
+type Person struct {
+	DisplayName string
+	Client      string
+	Count       int
+	At          time.Time
+}
+
+type Holding struct {
+	DisplayName string
+	Client      string
+	SavedAt     time.Time
+}
+
+type Activity struct {
+	Events     []Event
+	Viewed     []Person
+	Downloaded []Person
+	Phones     []Holding
+}
+
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	pool, err := pgxpool.New(ctx, databaseURL)
 	if err != nil {
@@ -103,7 +134,7 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 func (s *Store) Close() { s.pool.Close() }
 
 func (s *Store) Reset(ctx context.Context) error {
-	_, err := s.pool.Exec(ctx, `TRUNCATE events, objects, shares, sessions, users CASCADE`)
+	_, err := s.pool.Exec(ctx, `TRUNCATE holdings, events, objects, shares, sessions, devices, users CASCADE`)
 	return err
 }
 
@@ -172,17 +203,157 @@ func splitSQL(sql string) []string {
 
 func (s *Store) UpsertAppleUser(ctx context.Context, sub, name string) (string, string, error) {
 	var id, display string
+	err := s.pool.QueryRow(ctx, `SELECT id::text, display_name FROM users WHERE apple_sub=$1`, sub).Scan(&id, &display)
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = s.pool.QueryRow(ctx, `
+			INSERT INTO users (apple_sub, display_name) VALUES ($1, $2)
+			RETURNING id::text, display_name
+		`, sub, name).Scan(&id, &display)
+		if isUnique(err) {
+			err = s.pool.QueryRow(ctx, `
+				INSERT INTO users (apple_sub, display_name) VALUES ($1, '')
+				RETURNING id::text, display_name
+			`, sub).Scan(&id, &display)
+		}
+		return id, display, err
+	}
+	if err != nil {
+		return "", "", err
+	}
+	if name == "" || strings.EqualFold(name, display) {
+		return id, display, nil
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE users SET display_name=$2 WHERE id=$1`, id, name)
+	if isUnique(err) {
+		return id, display, nil
+	}
+	if err != nil {
+		return "", "", err
+	}
+	if tag.RowsAffected() == 0 {
+		return id, display, nil
+	}
+	return id, name, nil
+}
+
+func (s *Store) RegisterDevice(ctx context.Context, deviceID, name, platform string) (string, string, bool, error) {
+	var userID, display string
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO users (apple_sub, display_name)
-		VALUES ($1, $2)
-		ON CONFLICT (apple_sub) DO UPDATE
-		SET display_name = CASE
-			WHEN EXCLUDED.display_name <> '' THEN EXCLUDED.display_name
-			ELSE users.display_name
-		END
-		RETURNING id::text, display_name
-	`, sub, name).Scan(&id, &display)
-	return id, display, err
+		SELECT u.id::text, u.display_name
+		FROM devices d JOIN users u ON u.id = d.user_id
+		WHERE d.id=$1
+	`, deviceID).Scan(&userID, &display)
+	if err == nil {
+		return userID, display, true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return "", "", false, err
+	}
+	if name == "" {
+		return "", "", false, ErrNameRequired
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return "", "", false, err
+	}
+	defer tx.Rollback(ctx)
+	err = tx.QueryRow(ctx, `
+		INSERT INTO users (display_name) VALUES ($1) RETURNING id::text
+	`, name).Scan(&userID)
+	if isUnique(err) {
+		return "", "", false, ErrNameTaken
+	}
+	if err != nil {
+		return "", "", false, err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO devices (id, user_id, platform) VALUES ($1, $2, $3)`, deviceID, userID, platform); err != nil {
+		if isUnique(err) {
+			var againName string
+			err = s.pool.QueryRow(ctx, `
+				SELECT u.id::text, u.display_name
+				FROM devices d JOIN users u ON u.id = d.user_id
+				WHERE d.id=$1
+			`, deviceID).Scan(&userID, &againName)
+			if err != nil {
+				return "", "", false, ErrNameTaken
+			}
+			return userID, againName, true, nil
+		}
+		return "", "", false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", "", false, err
+	}
+	return userID, name, false, nil
+}
+
+func (s *Store) DeviceUser(ctx context.Context, deviceID string) (string, string, error) {
+	var userID, name string
+	err := s.pool.QueryRow(ctx, `
+		SELECT u.id::text, u.display_name
+		FROM devices d JOIN users u ON u.id = d.user_id
+		WHERE d.id=$1
+	`, deviceID).Scan(&userID, &name)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", ErrNotFound
+	}
+	return userID, name, err
+}
+
+func (s *Store) Profile(ctx context.Context, userID string) (Profile, error) {
+	var p Profile
+	err := s.pool.QueryRow(ctx, `
+		SELECT u.id::text, u.display_name, u.apple_sub IS NOT NULL,
+		       COALESCE(d.id, ''), COALESCE(d.platform, '')
+		FROM users u LEFT JOIN devices d ON d.user_id = u.id
+		WHERE u.id=$1
+	`, userID).Scan(&p.ID, &p.DisplayName, &p.AppleLinked, &p.DeviceID, &p.Platform)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Profile{}, ErrNotFound
+	}
+	return p, err
+}
+
+func (s *Store) Rename(ctx context.Context, userID, name string) error {
+	if name == "" {
+		return ErrNameRequired
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE users SET display_name=$2 WHERE id=$1`, userID, name)
+	if isUnique(err) {
+		return ErrNameTaken
+	}
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) BindApple(ctx context.Context, userID, sub string) error {
+	var owner string
+	err := s.pool.QueryRow(ctx, `SELECT id::text FROM users WHERE apple_sub=$1`, sub).Scan(&owner)
+	if err == nil && owner != userID {
+		return ErrConflict
+	}
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE users SET apple_sub=$2
+		WHERE id=$1 AND (apple_sub IS NULL OR apple_sub=$2)
+	`, userID, sub)
+	if isUnique(err) {
+		return ErrConflict
+	}
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrConflict
+	}
+	return nil
 }
 
 func (s *Store) CreateSession(ctx context.Context, userID string, ttl time.Duration) (string, error) {
@@ -641,32 +812,122 @@ func (s *Store) Revoke(ctx context.Context, ownerID string, shareID []byte) ([]s
 	return keys, nil
 }
 
-func (s *Store) AddEvent(ctx context.Context, shareID []byte, kind, client, name, device string) error {
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO events (share_id, kind, client, display_name, device_id)
-		VALUES ($1, $2, $3, NULLIF($4, ''), NULLIF($5, ''))
-	`, shareID, kind, client, name, device)
-	return err
+func (s *Store) AddEvent(ctx context.Context, shareID []byte, userID, kind, client string) error {
+	profile, err := s.Profile(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if profile.DisplayName == "" {
+		return ErrNameRequired
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO events (share_id, user_id, kind, client, display_name, device_id)
+		VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''))
+	`, shareID, userID, kind, client, profile.DisplayName, profile.DeviceID); err != nil {
+		return err
+	}
+	if kind == "save" {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO holdings (share_id, user_id, device_id, client)
+			VALUES ($1, $2, $3, $4)
+			ON CONFLICT (share_id, user_id) DO UPDATE
+			SET saved_at = now(), device_id = EXCLUDED.device_id, client = EXCLUDED.client
+		`, shareID, userID, profile.DeviceID, client); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }
 
-func (s *Store) Events(ctx context.Context, shareID []byte) ([]Event, error) {
+func (s *Store) Activity(ctx context.Context, shareID []byte) (Activity, error) {
+	var act Activity
+	act.Events = []Event{}
+	act.Viewed = []Person{}
+	act.Downloaded = []Person{}
+	act.Phones = []Holding{}
 	rows, err := s.pool.Query(ctx, `
 		SELECT kind, client, COALESCE(display_name, ''), COALESCE(device_id, ''), created_at
 		FROM events WHERE share_id=$1 ORDER BY created_at
 	`, shareID)
 	if err != nil {
-		return nil, err
+		return act, err
 	}
-	defer rows.Close()
-	var out []Event
 	for rows.Next() {
 		var e Event
 		if err := rows.Scan(&e.Kind, &e.Client, &e.DisplayName, &e.DeviceID, &e.CreatedAt); err != nil {
+			rows.Close()
+			return act, err
+		}
+		act.Events = append(act.Events, e)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return act, err
+	}
+	act.Viewed, err = s.people(ctx, shareID, []string{"view", "open"})
+	if err != nil {
+		return act, err
+	}
+	act.Downloaded, err = s.people(ctx, shareID, []string{"download"})
+	if err != nil {
+		return act, err
+	}
+	phoneRows, err := s.pool.Query(ctx, `
+		SELECT u.display_name, h.client, h.saved_at
+		FROM holdings h JOIN users u ON u.id = h.user_id
+		WHERE h.share_id=$1
+		ORDER BY h.saved_at
+	`, shareID)
+	if err != nil {
+		return act, err
+	}
+	defer phoneRows.Close()
+	for phoneRows.Next() {
+		var h Holding
+		if err := phoneRows.Scan(&h.DisplayName, &h.Client, &h.SavedAt); err != nil {
+			return act, err
+		}
+		act.Phones = append(act.Phones, h)
+	}
+	return act, phoneRows.Err()
+}
+
+func (s *Store) people(ctx context.Context, shareID []byte, kinds []string) ([]Person, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT name, client, n, at FROM (
+			SELECT (array_agg(COALESCE(display_name, '') ORDER BY created_at DESC))[1] AS name,
+			       (array_agg(client ORDER BY created_at DESC))[1] AS client,
+			       count(*) AS n,
+			       max(created_at) AS at
+			FROM events
+			WHERE share_id=$1 AND kind = ANY($2)
+			GROUP BY COALESCE(user_id::text, lower(display_name))
+		) grouped
+		ORDER BY at
+	`, shareID, kinds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Person{}
+	for rows.Next() {
+		var p Person
+		if err := rows.Scan(&p.DisplayName, &p.Client, &p.Count, &p.At); err != nil {
 			return nil, err
 		}
-		out = append(out, e)
+		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+func isUnique(err error) bool {
+	var pe *pgconn.PgError
+	return errors.As(err, &pe) && pe.Code == "23505"
 }
 
 type rowQuery interface {

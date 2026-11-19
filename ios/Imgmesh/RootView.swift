@@ -12,21 +12,40 @@ struct RootView: View {
     var body: some View {
         NavigationStack(path: $path) {
             List {
-                Section("分享") {
+                Section("这台设备") {
                     if model.session == nil {
-                        SignInWithAppleButton(.signIn) { request in
-                            request.requestedScopes = [.fullName]
-                        } onCompletion: { result in
-                            if case .success(let auth) = result, let credential = auth.credential as? ASAuthorizationAppleIDCredential {
-                                Task { await model.signIn(credential) }
-                            }
-                        }
-                        .frame(height: 44)
-                        .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 8, trailing: 0))
+                        Text("每台设备只能注册一次，名称不能和别人重复。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                        TextField("名称，例如小林", text: $model.draftName)
+                        Button("注册") { Task { await model.register() } }
+                            .disabled(model.draftName.trimmingCharacters(in: .whitespaces).isEmpty)
                     } else {
-                        Text(model.session?.displayName.isEmpty == false ? model.session!.displayName : "已登录")
-                        Button("退出登录", role: .destructive) { model.signOut() }
+                        Text(model.session?.displayName ?? "")
+                        TextField("改成新名称", text: $model.draftName)
+                        Button("保存名称") { Task { await model.rename(to: model.draftName) } }
+                            .disabled(model.draftName.trimmingCharacters(in: .whitespaces).isEmpty)
+                        if model.session?.appleLinked == true {
+                            Text("已连接 Apple，可以分享和撤销。")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            SignInWithAppleButton(.signIn) { request in
+                                request.requestedScopes = [.fullName]
+                            } onCompletion: { result in
+                                if case .success(let auth) = result, let credential = auth.credential as? ASAuthorizationAppleIDCredential {
+                                    Task { await model.signIn(credential) }
+                                }
+                            }
+                            .frame(height: 44)
+                            .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 8, trailing: 0))
+                            Text("分享和撤销需要 Apple 登录。查看和保存只用上面的名称。")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
                     }
+                }
+                Section("分享") {
                     TextField("标题，例如三亚", text: $title)
                     Button("选择照片") { showPicker = true }
                         .disabled(model.busy || model.session == nil)
@@ -63,6 +82,7 @@ struct RootView: View {
                     GalleryView(share: share)
                 }
             }
+            .task { await model.restore() }
             .overlay(alignment: .bottom) {
                 if !model.errorMessage.isEmpty {
                     Text(model.errorMessage)
@@ -121,17 +141,10 @@ struct GalleryView: View {
                     Button("撤销链接", role: .destructive) { Task { await model.revoke(share) } }
                 }
             }
-            if share.role == "sent" && !model.events.isEmpty {
-                Section("谁打开过") {
-                    ForEach(model.events) { event in
-                        VStack(alignment: .leading) {
-                            Text(eventLabel(event.kind))
-                            Text([event.displayName, event.client, event.createdAt].filter { !$0.isEmpty }.joined(separator: " · "))
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
+            if share.role == "sent" {
+                activitySection("谁查看过", model.activity.viewed)
+                activitySection("谁下载过", model.activity.downloaded)
+                activitySection("在这些手机里", model.activity.phones)
             }
         }
         .navigationTitle(share.title)
@@ -151,12 +164,31 @@ struct GalleryView: View {
         }
     }
 
-    private func eventLabel(_ kind: String) -> String {
-        switch kind {
-        case "open": return "打开了"
-        case "save": return "存进了相册"
-        case "remove": return "从 imgmesh 移除了"
-        default: return kind
+    @ViewBuilder
+    private func activitySection(_ title: String, _ rows: [APIClient.ActivityRow]) -> some View {
+        Section(title) {
+            if rows.isEmpty {
+                Text("还没有记录。").foregroundStyle(.secondary)
+            }
+            ForEach(rows) { row in
+                VStack(alignment: .leading) {
+                    Text(row.displayName.isEmpty ? "未命名" : row.displayName)
+                    Text(activityDetail(row))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
+    }
+
+    private func activityDetail(_ row: APIClient.ActivityRow) -> String {
+        let place = row.client == "ios" ? "iPhone" : "浏览器"
+        if let savedAt = row.savedAt, !savedAt.isEmpty {
+            return "\(place) · 已存进相册"
+        }
+        if let count = row.count {
+            return "\(place) · \(count) 次"
+        }
+        return place
     }
 }
