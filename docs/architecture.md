@@ -247,7 +247,7 @@ Vite + TypeScript，解密使用 WebCrypto。Nginx 把 `/s/*` 指到这个 SPA�
 
 ### Windows 与 Mac
 
-`desktop/` 是一份 Electron 应用。界面、加密和上传都写在同一套 TypeScript 里，加密函数来自 `web/src/crypto.ts`。`npm run dist` 按当前系统调用 electron-builder：在 Mac 上生成 dmg 和 zip，在 Windows 上生成 nsis 安装包和 zip。不需要为两个系统各写一份客户端。
+`desktop/` 是一份 Electron 应用。界面、加密和上传都写在同一套 TypeScript 里，加密函数来自 `web/src/crypto.ts`。`npm run dist` 按当前系统调用 electron-builder：在 Mac 上生成 dmg 和 zip，在 Windows 上生成 nsis 安装包和 zip。不需要为两个系统各写一份客户端。推送 `v*` 标签后，`.github/workflows/release-desktop.yml` 用这份代码在 Mac 和 Windows 上生成安装包，并挂到该标签的 GitHub Release。安装包版本号取自标签。
 
 电脑上选 JPEG、PNG、WebP 或 HEIC，本地加密后上传，发出带 `#k=` 的链接。打开链接后是照片网格和身份证。保存时选择一个文件夹，写入解密后的原图，并记一条 `save`。密钥只留在本机的分享列表里。
 

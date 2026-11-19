@@ -1,0 +1,96 @@
+name: Release desktop
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            name: mac
+          - os: windows-latest
+            name: windows
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install
+        working-directory: desktop
+        run: npm ci
+
+      - name: Use the tag as the app version
+        working-directory: desktop
+        shell: bash
+        run: npm pkg set version="${GITHUB_REF_NAME#v}"
+
+      - name: Package
+        working-directory: desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run dist
+
+      - name: Collect installers
+        shell: bash
+        run: |
+          mkdir -p out
+          shopt -s nullglob
+          files=(desktop/release/*.dmg desktop/release/*.zip desktop/release/*.exe)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "no installers were produced"
+            exit 1
+          fi
+          cp "${files[@]}" out/
+          ls -lh out
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: imgmesh-${{ matrix.name }}
+          path: out/*
+          if-no-files-found: error
+
+  publish:
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download installers
+        uses: actions/download-artifact@v4
+        with:
+          pattern: imgmesh-*
+          path: installers
+          merge-multiple: true
+
+      - name: Attach installers to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          shopt -s nullglob
+          files=(installers/*.dmg installers/*.zip installers/*.exe)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "no installers to publish"
+            exit 1
+          fi
+          notes="Windows 和 Mac 安装包由标签 ${tag} 自动生成。"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "${files[@]}" --clobber
+          else
+            gh release create "$tag" "${files[@]}" --title "imgmesh ${version}" --notes "$notes"
+          fi

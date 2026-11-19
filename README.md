@@ -12,7 +12,7 @@
 - `web/`：浏览器查看器，构建后放在 `/s/`
 - `server/`：Go API
 - `ios/`：SwiftUI 工程，用 Xcode 打开 `ios/Imgmesh.xcodeproj`
-- `desktop/`：Windows 和 Mac 共用的 Electron 客户端。在对应系统上执行 `cd desktop && npm ci && npm run dist`
+- `desktop/`：Windows 和 Mac 共用的 Electron 客户端。在对应系统上执行 `cd desktop && npm ci && npm run dist`。推送 `v*` 标签后，GitHub Actions 会生成这两个系统的安装包并挂到该版本
 - `deploy/`：systemd、Nginx 片段和服务器安装脚本
 
 ## iOS
