@@ -40,6 +40,27 @@ export function aad(shareId: Uint8Array, objectId: Uint8Array): Uint8Array {
   return out;
 }
 
+export function randomBytes(size: number): Uint8Array {
+  const bytes = new Uint8Array(size);
+  crypto.getRandomValues(bytes);
+  return bytes;
+}
+
+export async function encrypt(
+  keyBytes: Uint8Array,
+  nonce: Uint8Array,
+  additional: Uint8Array,
+  plain: Uint8Array,
+): Promise<Uint8Array> {
+  const key = await crypto.subtle.importKey("raw", keyBytes as BufferSource, "AES-GCM", false, ["encrypt"]);
+  const cipher = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv: nonce as BufferSource, additionalData: additional as BufferSource },
+    key,
+    plain as BufferSource,
+  );
+  return new Uint8Array(cipher);
+}
+
 export async function decrypt(
   keyBytes: Uint8Array,
   nonce: Uint8Array,

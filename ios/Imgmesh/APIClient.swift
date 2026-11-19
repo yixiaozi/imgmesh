@@ -165,6 +165,11 @@ struct APIClient {
         var viewed: [ActivityRow]
         var downloaded: [ActivityRow]
         var phones: [ActivityRow]
+        var followers: [ActivityRow]? = nil
+    }
+
+    func follow(token: String, shareID: String, access: String, on: Bool) async throws {
+        try await sendEmpty(path: "/v1/shares/\(shareID)/follow", method: on ? "POST" : "DELETE", token: token, access: access, payload: nil)
     }
 
     func activity(token: String, shareID: String) async throws -> ShareActivity {

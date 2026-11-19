@@ -77,6 +77,7 @@
         <li>点「选择照片」，可以多选。能发 JPEG、HEIC、PNG 和 WebP，单张不超过 50MB。选图用的是系统选择器，App 不会读取整个相册。</li>
         <li>等加密和上传结束。页面上会出现链接，点「复制链接」，或点「发出链接」交给系统分享。</li>
         <li>把整段链接发给对方。自己先打开一次，确认地址里还有 <code>#k=</code>。</li>
+        <li>之后还可以在这组照片里点「添加照片」。新照片进的是原来的链接，不用重发。</li>
       </ol>
     </section>
 
@@ -87,7 +88,8 @@
       <p>对方也装了 App 时：</p>
       <ol class="procedure">
         <li>在「打开一份分享」里粘贴完整链接，点「打开」。配好 Team ID 之后，直接点链接也会进来。</li>
-        <li>照片出现后，点「保存到相册」。第一次会请求「添加照片」权限，用来写入新照片。</li>
+        <li>照片出现后，点「保存到相册」。第一次会请求「添加照片」权限，用来写入新照片。保存之后会记住：这条链接以后再增加照片，再次打开会自动存进相册。不想自动保存时，关掉「自动保存新增照片」。</li>
+        <li>浏览器里点「全部下载」，效果一样。后来才打开链接的人，能下载当时已经在里面的全部照片，也可以打开自动下载。</li>
         <li>保存进去的是解密后的原图，之后在系统相册里查看。</li>
       </ol>
     </section>
@@ -102,6 +104,19 @@
         <li>谁保存了：哪些人把这张照片留了下来。</li>
       </ul>
       <p>在「我的资料」里可以写介绍、城市和联系方式。对方在「找人」里用名称、城市或联系方式就能找到你，并看到你分享过、保存过多少张。</p>
+    </section>
+
+    <section class="guide" aria-labelledby="desktop-title">
+      <h2 id="desktop-title">Windows 和 Mac</h2>
+      <p>电脑版是同一个客户端。界面和加密只维护一份，在 Mac 上打包得到 dmg，在 Windows 上打包得到安装程序。</p>
+      <ol class="procedure">
+        <li>安装 Node.js 22。</li>
+        <li>在仓库里进入 <code>desktop</code>，执行 <code>npm ci</code>，再执行 <code>npm run dist</code>。</li>
+        <li>安装包出现在 <code>desktop/release</code>。Mac 是 dmg 和 zip，Windows 是安装程序和 zip。</li>
+        <li>打开 imgmesh，给这台电脑登记一个没人用过的名称。登记之后就可以选择照片、发出链接，也可以粘贴完整链接查看和保存。</li>
+        <li>保存时选择一个文件夹。照片会解密后放进这个文件夹，并记到对应照片的身份证上。</li>
+      </ol>
+      <p class="note">电脑版不使用 Apple 登录。发出链接时仍然要保留井号后面的密钥。</p>
     </section>
 
     <section class="guide" aria-labelledby="after-title">

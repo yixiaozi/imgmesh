@@ -82,7 +82,7 @@ func load() (config, error) {
 		return config{}, err
 	}
 	quota, _ := strconv.ParseInt(os.Getenv("QUOTA_BYTES"), 10, 64)
-	origins := []string{"https://imgmesh.com", "https://www.imgmesh.com", "http://localhost:5173"}
+	origins := []string{"https://imgmesh.com", "https://www.imgmesh.com", "http://localhost:5173", "http://localhost:5174", "http://127.0.0.1:5174", "app://imgmesh"}
 	if extra := os.Getenv("ALLOWED_ORIGINS"); extra != "" {
 		origins = append(origins, strings.Split(extra, ",")...)
 	}

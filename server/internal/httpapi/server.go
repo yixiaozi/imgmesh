@@ -86,6 +86,8 @@ func (s *Server) Handler() http.Handler {
 		r.Group(func(r chi.Router) {
 			r.Use(s.withAccess)
 			r.Get("/shares/{id}", s.getShare)
+			r.Post("/shares/{id}/follow", s.follow)
+			r.Delete("/shares/{id}/follow", s.follow)
 			r.Post("/shares/{id}/photos", s.claimPhotos)
 			r.Get("/shares/{id}/manifest", s.manifest)
 			r.Get("/shares/{id}/objects/{oid}", s.objectURL)
@@ -141,7 +143,7 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &body) {
 		return
 	}
-	if !validDevice(body.DeviceID) || (body.Platform != "ios" && body.Platform != "web") {
+	if !validDevice(body.DeviceID) || (body.Platform != "ios" && body.Platform != "web" && body.Platform != "desktop") {
 		writeJSON(w, http.StatusBadRequest, errBody{"bad_request"})
 		return
 	}
@@ -727,6 +729,7 @@ func (s *Server) listEvents(w http.ResponseWriter, r *http.Request) {
 		"viewed":     peopleJSON(act.Viewed),
 		"downloaded": peopleJSON(act.Downloaded),
 		"phones":     phonesJSON(act.Phones),
+		"followers":  peopleJSON(act.Followers),
 	})
 }
 
@@ -751,7 +754,8 @@ func phonesJSON(list []store.Holding) []any {
 }
 
 func (s *Server) getShare(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireUser(w, r); !ok {
+	uid, ok := s.requireUser(w, r)
+	if !ok {
 		return
 	}
 	sh := shareFrom(r)
@@ -759,7 +763,30 @@ func (s *Server) getShare(w http.ResponseWriter, r *http.Request) {
 	if owner, err := s.Store.PublicUser(r.Context(), sh.OwnerID); err == nil {
 		body["owner"] = publicUserJSON(owner)
 	}
+	auto, err := s.Store.Following(r.Context(), sh.ID, uid)
+	if err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	body["autoSave"] = auto
 	writeJSON(w, http.StatusOK, body)
+}
+
+func (s *Server) follow(w http.ResponseWriter, r *http.Request) {
+	sh := shareFrom(r)
+	if err := sh.Unavailable(); err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	uid, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if err := s.Store.SetFollow(r.Context(), sh.ID, uid, r.Method == http.MethodPost); err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) manifest(w http.ResponseWriter, r *http.Request) {
@@ -855,12 +882,12 @@ func (s *Server) addEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch body.Client {
-	case "web", "ios":
+	case "web", "ios", "desktop":
 	default:
 		writeJSON(w, http.StatusBadRequest, errBody{"bad_request"})
 		return
 	}
-	if kind == "save" && body.Client != "ios" {
+	if kind == "save" && body.Client != "ios" && body.Client != "desktop" {
 		kind = "download"
 	}
 	if err := s.Store.AddEvent(r.Context(), sh.ID, uid, kind, body.Client); err != nil {
