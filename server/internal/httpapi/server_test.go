@@ -1344,6 +1344,73 @@ func TestAppendCommentsFeedAndRecovery(t *testing.T) {
 	}
 }
 
+func TestDesktopCreatesShareWithoutApple(t *testing.T) {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		dsn = "postgres:///imgmesh_test?host=/var/run/postgresql"
+	}
+	ctx := context.Background()
+	st, err := store.Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(st.Close)
+	if err := st.Reset(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := "http://" + ln.Addr().String()
+	dir := t.TempDir()
+	disk, err := blob.NewDisk(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := &Server{
+		Store: st, Disk: disk, Secret: bytes.Repeat([]byte{7}, 32), PublicBaseURL: base,
+		Apple: fakeApple{"good-token": "unused"}, DiskFreeMin: 1,
+	}
+	srv := &http.Server{Handler: api.Handler()}
+	go srv.Serve(ln)
+	t.Cleanup(func() { srv.Close() })
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	res := do(t, client, http.MethodPost, base+"/v1/register", "", "", map[string]string{
+		"deviceId": "desktop-device-1", "displayName": "窗边", "platform": "desktop",
+	})
+	if res.StatusCode != 201 {
+		t.Fatalf("register %d %s", res.StatusCode, readBody(res))
+	}
+	var registered struct {
+		Token string `json:"token"`
+		User  struct {
+			AppleLinked bool `json:"appleLinked"`
+		} `json:"user"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&registered); err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if registered.User.AppleLinked {
+		t.Fatal("desktop registration should not link Apple")
+	}
+
+	shareID := bytes.Repeat([]byte{0x91}, 16)
+	master := bytes.Repeat([]byte{0x11}, 32)
+	access, err := seal.AccessTag(master, shareID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res = do(t, client, http.MethodPost, base+"/v1/shares", registered.Token, "", map[string]any{
+		"id": id.Encode(shareID), "accessTag": id.Encode(access),
+	})
+	if res.StatusCode != 200 {
+		t.Fatalf("create %d %s", res.StatusCode, readBody(res))
+	}
+}
+
 func httpGet(t *testing.T, client *http.Client, url string) []byte {
 	t.Helper()
 	res, err := client.Get(url)

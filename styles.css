@@ -801,6 +801,48 @@ a.cta-note:focus-visible {
   animation: none;
 }
 
+.download-row {
+  display: grid;
+  gap: 0.8rem;
+  margin-top: 1.1rem;
+}
+
+.download-card {
+  display: grid;
+  gap: 0.3rem;
+  padding: 1rem 1.05rem;
+  border-radius: 0.75rem;
+  background: #fff;
+  border: 1px solid rgba(14, 107, 110, 0.16);
+  color: inherit;
+  text-decoration: none;
+}
+
+.download-card strong {
+  color: var(--ocean-deep);
+  font-size: 1.05rem;
+}
+
+.download-card span {
+  color: var(--ink-soft);
+  font-size: 0.92rem;
+}
+
+.download-card:hover {
+  border-color: var(--ocean);
+}
+
+.guide h3 {
+  margin: 1.4rem 0 0;
+  font-size: 1.05rem;
+}
+
+@media (min-width: 800px) {
+  .download-row {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
 .guide + .guide {
   margin-top: 2.4rem;
   padding-top: 2rem;

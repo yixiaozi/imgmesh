@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="description" content="把 imgmesh 装到 iPhone，发出加密照片链接，并让对方在浏览器查看或存进相册。" />
+  <meta name="description" content="下载 imgmesh 的安卓、Windows 和 Mac 安装包，或用 Xcode 装到 iPhone。收到链接的人用浏览器就能看。" />
   <meta name="theme-color" content="#0e6b6e" />
   <title>安装和使用 · imgmesh</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
@@ -26,7 +26,41 @@
 
   <main class="page">
     <h1>安装和使用</h1>
-    <p class="lede">App 还没上架。用 Xcode 装到自己的 iPhone 就能发照片。收到链接的人不用装 App，用浏览器就能看。</p>
+    <p class="lede">安卓、Windows 和 Mac 可以直接从这里下载。iPhone 还没上架，用 Xcode 装到自己的手机。收到链接的人不用装 App，用浏览器就能看。</p>
+
+    <section class="guide" aria-labelledby="download-title">
+      <h2 id="download-title">下载安卓、Windows 和 Mac</h2>
+      <p>这三个安装包放在本站，不经过应用商店。下载后按各自系统的提示安装。</p>
+      <div class="download-row">
+        <a class="download-card" href="/download/imgmesh.apk">
+          <strong>安卓</strong>
+          <span>APK，Android 10 及以上</span>
+        </a>
+        <a class="download-card" href="/download/imgmesh-setup.exe">
+          <strong>Windows</strong>
+          <span>安装程序，64 位</span>
+        </a>
+        <a class="download-card" href="/download/imgmesh.dmg">
+          <strong>Mac</strong>
+          <span>dmg，Apple 芯片和 Intel</span>
+        </a>
+      </div>
+      <h3 id="android-title">安卓</h3>
+      <ol class="procedure">
+        <li>点上面的安卓，下载 <code>imgmesh.apk</code>。</li>
+        <li>打开文件。如果系统拦住，到设置里允许这台浏览器安装未知应用，再打开一次。</li>
+        <li>给这台手机登记一个没人用过的名称。之后可以粘贴完整链接，查看照片网格和身份证，并把照片存进相册。</li>
+      </ol>
+      <p class="note">安卓没有 Sign in with Apple。打开和保存可以用。发出、继续添加和撤销仍会提示先用 Apple 登录。</p>
+      <h3>Windows 和 Mac</h3>
+      <ol class="procedure">
+        <li>Windows 下载安装程序并运行。如果出现「未知发布者」，选择仍要运行。</li>
+        <li>Mac 下载 dmg，把 imgmesh 拖进应用程序。如果系统说无法验证开发者，到「系统设置 → 隐私与安全性」里打开。</li>
+        <li>打开 imgmesh，给这台电脑登记一个没人用过的名称。之后可以选择照片发出链接，也可以粘贴完整链接查看和保存。</li>
+        <li>保存时选择一个文件夹。照片会解密后放进这个文件夹，并记到对应照片的身份证上。</li>
+      </ol>
+      <p class="note">电脑版不使用 Apple 登录。发出链接时仍然要保留井号后面的密钥。想自己打包时，在仓库的 <code>desktop</code> 目录执行 <code>npm ci</code> 和 <code>npm run dist</code>。</p>
+    </section>
 
     <section class="guide" aria-labelledby="need-title">
       <h2 id="need-title">先准备这些</h2>
@@ -107,19 +141,6 @@
       <p>在「我的资料」里可以写介绍、城市和联系方式。对方在「找人」里用名称、城市或联系方式就能找到你，并看到你分享过、保存过多少张。找到之后可以加好友。对方接受后，双方可以发消息。消息存在服务器上，只有这两个好友能看；照片本身仍然是加密的。</p>
       <p>iPhone 拍的 HEIC 会在浏览器里解开预览，原图仍按原来的字节加密。解不开时，网格里留下文件名，可以下载原文件。照片身份证下面可以留言，同一张照片从哪条链接打开都是同一串留言。打开页面就能看到「最新动态」：谁打开或保存了你的分享、谁往你的链接加了照片、谁点了赞、谁发来好友申请、好友的消息。点一条就标成已读。</p>
       <p>一台手机和浏览器可以是同一个人。在已经登记的设备上生成恢复码，另一台设备输入后就并入原来的名称、好友和动态。恢复码只显示一次，服务器只存哈希。</p>
-    </section>
-
-    <section class="guide" aria-labelledby="desktop-title">
-      <h2 id="desktop-title">Windows 和 Mac</h2>
-      <p>电脑版是同一个客户端。界面和加密只维护一份，在 Mac 上打包得到 dmg，在 Windows 上打包得到安装程序。</p>
-      <ol class="procedure">
-        <li>安装 Node.js 22。</li>
-        <li>在仓库里进入 <code>desktop</code>，执行 <code>npm ci</code>，再执行 <code>npm run dist</code>。</li>
-        <li>安装包出现在 <code>desktop/release</code>。Mac 是 dmg 和 zip，Windows 是安装程序和 zip。</li>
-        <li>打开 imgmesh，给这台电脑登记一个没人用过的名称。登记之后就可以选择照片、发出链接，也可以粘贴完整链接查看和保存。</li>
-        <li>保存时选择一个文件夹。照片会解密后放进这个文件夹，并记到对应照片的身份证上。</li>
-      </ol>
-      <p class="note">电脑版不使用 Apple 登录。发出链接时仍然要保留井号后面的密钥。</p>
     </section>
 
     <section class="guide" aria-labelledby="after-title">

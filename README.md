@@ -12,7 +12,13 @@
 - `web/`：浏览器查看器，构建后放在 `/s/`
 - `server/`：Go API
 - `ios/`：SwiftUI 工程，用 Xcode 打开 `ios/Imgmesh.xcodeproj`
+- `android/`：安卓客户端
+- `desktop/`：Windows 和 Mac 客户端
 - `deploy/`：systemd、Nginx 片段和服务器安装脚本
+
+## 下载
+
+安装页提供三个安装包：`/download/imgmesh.apk`、`/download/imgmesh-setup.exe`、`/download/imgmesh.dmg`。`.github/workflows/publish-clients.yml` 在推送到 `main` 后构建它们并传到网站，安装包本身不进 git。推送 `v*` 标签时，`.github/workflows/release-desktop.yml` 还会把 Windows 和 Mac 安装包附到对应的 GitHub Release。
 
 ## iOS
 

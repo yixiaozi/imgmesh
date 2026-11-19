@@ -1,0 +1,192 @@
+name: Publish client downloads
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "android/**"
+      - "desktop/**"
+      - "web/src/crypto.ts"
+      - ".github/workflows/publish-clients.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-imgmesh-clients
+  cancel-in-progress: false
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK packages
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager --install "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Build installable APK
+        working-directory: android
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :app:assembleDebug --no-daemon
+
+      - name: Collect APK
+        run: |
+          test -f android/app/build/outputs/apk/debug/app-debug.apk
+          mkdir -p out
+          cp android/app/build/outputs/apk/debug/app-debug.apk out/imgmesh.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: imgmesh-apk
+          path: out/imgmesh.apk
+          if-no-files-found: error
+
+  mac:
+    runs-on: macos-latest
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install
+        working-directory: desktop
+        run: npm ci
+
+      - name: Build universal dmg
+        working-directory: desktop
+        run: npx electron-builder --mac dmg --universal
+
+      - name: Collect dmg
+        run: |
+          shopt -s nullglob
+          files=(desktop/release/*.dmg)
+          if [ "${#files[@]}" -ne 1 ]; then
+            echo "expected one dmg, found ${#files[@]}"
+            ls -lh desktop/release || true
+            exit 1
+          fi
+          mkdir -p out
+          cp "${files[0]}" out/imgmesh.dmg
+
+      - name: Upload dmg
+        uses: actions/upload-artifact@v4
+        with:
+          name: imgmesh-dmg
+          path: out/imgmesh.dmg
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-latest
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install
+        working-directory: desktop
+        run: npm ci
+
+      - name: Build installer
+        working-directory: desktop
+        run: npx electron-builder --win nsis
+
+      - name: Collect installer
+        shell: bash
+        run: |
+          shopt -s nullglob
+          files=(desktop/release/*Setup*.exe)
+          if [ "${#files[@]}" -ne 1 ]; then
+            echo "expected one installer, found ${#files[@]}"
+            ls -lh desktop/release || true
+            exit 1
+          fi
+          mkdir -p out
+          cp "${files[0]}" out/imgmesh-setup.exe
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: imgmesh-exe
+          path: out/imgmesh-setup.exe
+          if-no-files-found: error
+
+  publish:
+    needs: [android, mac, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download APK
+        uses: actions/download-artifact@v4
+        with:
+          name: imgmesh-apk
+          path: publish
+
+      - name: Download dmg
+        uses: actions/download-artifact@v4
+        with:
+          name: imgmesh-dmg
+          path: publish
+
+      - name: Download installer
+        uses: actions/download-artifact@v4
+        with:
+          name: imgmesh-exe
+          path: publish
+
+      - name: Check the three files
+        run: |
+          test -f publish/imgmesh.apk
+          test -f publish/imgmesh.dmg
+          test -f publish/imgmesh-setup.exe
+          ls -lh publish
+
+      - name: Prepare SSH key
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Upload to the website
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          SSH="ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new"
+          $SSH "${SSH_USER}@${SSH_HOST}" "mkdir -p /var/www/imgmesh/download"
+          rsync -avz -e "$SSH" \
+            publish/imgmesh.apk \
+            publish/imgmesh.dmg \
+            publish/imgmesh-setup.exe \
+            "${SSH_USER}@${SSH_HOST}:/var/www/imgmesh/download/"
