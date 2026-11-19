@@ -19,6 +19,12 @@ final class AppModel: ObservableObject {
     @Published var peopleQuery = ""
     @Published var people: [APIClient.PublicUser] = []
     @Published var cards: [String: APIClient.PhotoCard] = [:]
+    @Published var friends: [APIClient.SocialUser] = []
+    @Published var incoming: [APIClient.SocialUser] = []
+    @Published var outgoing: [APIClient.SocialUser] = []
+    @Published var chatPeer: APIClient.PublicUser?
+    @Published var messages: [APIClient.DirectMessage] = []
+    @Published var messageDraft = ""
 
     let api = APIClient()
     private var deviceID = KeychainStore.deviceID()
@@ -39,7 +45,10 @@ final class AppModel: ObservableObject {
 
     func restore() async {
         deviceID = KeychainStore.deviceID()
-        if session != nil { return }
+        if session != nil {
+            await loadFriends()
+            return
+        }
         do {
             let resumed = try await api.resume(deviceID: deviceID)
             store(resumed)
@@ -103,6 +112,88 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func loadFriends() async {
+        guard let token = session?.token else { return }
+        do {
+            let lists = try await api.friends(token: token)
+            friends = lists.friends
+            incoming = lists.incoming
+            outgoing = lists.outgoing
+        } catch {
+            errorMessage = apiMessage(error)
+        }
+    }
+
+    func addFriend(_ person: APIClient.PublicUser) async {
+        guard let token = session?.token else { return }
+        guard person.id != session?.userID else {
+            errorMessage = "不能加自己为好友。"
+            return
+        }
+        do {
+            let status = try await api.requestFriend(token: token, userID: person.id)
+            self.status = status == "accepted" ? "已经是好友，可以发消息了。" : "申请已发出。对方接受后就能发消息。"
+            errorMessage = ""
+            await loadFriends()
+        } catch {
+            errorMessage = apiMessage(error)
+        }
+    }
+
+    func decideFriend(_ person: APIClient.SocialUser, action: String) async {
+        guard let token = session?.token else { return }
+        do {
+            try await api.respondFriend(token: token, userID: person.id, action: action)
+            switch action {
+            case "accept": status = "已接受，现在可以发消息。"
+            case "remove": status = "已解除好友。"
+            default: status = "已拒绝。"
+            }
+            errorMessage = ""
+            await loadFriends()
+        } catch {
+            errorMessage = apiMessage(error)
+        }
+    }
+
+    func openChat(_ person: APIClient.PublicUser) async {
+        chatPeer = person
+        messageDraft = ""
+        guard let token = session?.token else { return }
+        do {
+            messages = try await api.messages(token: token, userID: person.id)
+            errorMessage = ""
+            await loadFriends()
+        } catch {
+            errorMessage = apiMessage(error)
+        }
+    }
+
+    func sendChat() async {
+        guard let token = session?.token, let peer = chatPeer else { return }
+        let text = messageDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        do {
+            let sent = try await api.sendMessage(token: token, to: peer.id, body: text)
+            messages.append(sent)
+            messageDraft = ""
+            errorMessage = ""
+        } catch {
+            errorMessage = apiMessage(error)
+        }
+    }
+
+    func toggleLike(_ photoID: String) async {
+        guard let token = session?.token, let card = cards[photoID] else { return }
+        do {
+            try await api.setLike(token: token, photoID: photoID, on: !card.liked)
+            await loadCards(token: token, photos: gallery)
+            errorMessage = ""
+        } catch {
+            errorMessage = apiMessage(error)
+        }
+    }
+
     func signIn(_ credential: ASAuthorizationAppleIDCredential) async {
         guard let tokenData = credential.identityToken, let token = String(data: tokenData, encoding: .utf8) else {
             errorMessage = "没有拿到 Apple 登录凭证。"
@@ -128,7 +219,8 @@ final class AppModel: ObservableObject {
             token: account.token,
             displayName: account.user.displayName,
             appleLinked: account.user.appleLinked,
-            deviceID: account.user.deviceId.isEmpty ? deviceID : account.user.deviceId
+            deviceID: account.user.deviceId.isEmpty ? deviceID : account.user.deviceId,
+            userID: account.user.id
         )
         session = stored
         bio = account.user.bio ?? ""

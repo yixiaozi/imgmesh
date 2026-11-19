@@ -369,3 +369,71 @@ body {
   background: rgba(255, 255, 255, 0.7);
   border-radius: 0.8rem;
 }
+
+.social {
+  margin: 0.4rem 0 1rem;
+  padding: 0.9rem 1rem;
+  border-radius: 0.9rem;
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.social[hidden] {
+  display: none;
+}
+
+.social h2,
+.social h3,
+.social-head {
+  margin: 0.2rem 0 0.45rem;
+}
+
+.social-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.thread {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  max-height: 18rem;
+  overflow: auto;
+  margin: 0.6rem 0;
+}
+
+.bubble {
+  margin: 0;
+  max-width: 80%;
+  padding: 0.4rem 0.7rem;
+  border-radius: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
+.bubble.mine {
+  align-self: flex-end;
+  background: #0e6b6e;
+  color: white;
+}
+
+.bubble.theirs {
+  align-self: flex-start;
+  background: rgba(14, 107, 110, 0.12);
+}
+
+.composer {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.composer input {
+  flex: 1;
+  min-width: 0;
+}
+
+.friend-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}

@@ -45,6 +45,23 @@ export interface PhotoCard {
   sharedBy: NamedUser[];
   holders: PhotoHolder[];
   savers: PhotoHolder[];
+  likeCount: number;
+  liked: boolean;
+  likedBy: NamedUser[];
+}
+
+export interface SocialUser extends PublicUser {
+  unread?: number;
+  lastBody?: string;
+  lastAt?: string;
+}
+
+export interface DirectMessage {
+  id: string;
+  senderId: string;
+  recipientId: string;
+  body: string;
+  createdAt: string;
 }
 
 export interface Account {
@@ -169,6 +186,58 @@ export async function loadUser(token: string, id: string): Promise<PublicUser> {
   if (!res.ok) throw new Error(await readError(res));
   const body = (await res.json()) as { user: PublicUser };
   return body.user;
+}
+
+export async function setLike(token: string, photoID: string, on: boolean): Promise<void> {
+  const res = await fetch(`/v1/photos/${photoID}/like`, {
+    method: on ? "POST" : "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(await readError(res));
+}
+
+export async function loadFriends(token: string): Promise<{ friends: SocialUser[]; incoming: SocialUser[]; outgoing: SocialUser[] }> {
+  const res = await fetch("/v1/friends", { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error(await readError(res));
+  return (await res.json()) as { friends: SocialUser[]; incoming: SocialUser[]; outgoing: SocialUser[] };
+}
+
+export async function requestFriend(token: string, userId: string): Promise<"pending" | "accepted"> {
+  const res = await fetch("/v1/friends", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ userId }),
+  });
+  if (!res.ok) throw new Error(await readError(res));
+  const body = (await res.json()) as { status: "pending" | "accepted" };
+  return body.status;
+}
+
+export async function respondFriend(token: string, userId: string, action: "accept" | "decline" | "remove"): Promise<void> {
+  const res = await fetch(`/v1/friends/${userId}${action === "remove" ? "" : `/${action}`}`, {
+    method: action === "remove" ? "DELETE" : "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(await readError(res));
+}
+
+export async function loadMessages(token: string, userId: string): Promise<DirectMessage[]> {
+  const res = await fetch(`/v1/messages?with=${encodeURIComponent(userId)}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(await readError(res));
+  const body = (await res.json()) as { messages: DirectMessage[] };
+  return body.messages;
+}
+
+export async function sendMessage(token: string, to: string, body: string): Promise<DirectMessage> {
+  const res = await fetch("/v1/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ to, body }),
+  });
+  if (!res.ok) throw new Error(await readError(res));
+  return (await res.json()) as DirectMessage;
 }
 
 export async function photoCards(token: string, ids: string[]): Promise<PhotoCard[]> {

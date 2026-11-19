@@ -76,6 +76,15 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/users", s.searchUsers)
 			r.Get("/users/{id}", s.publicUser)
 			r.Get("/photos", s.photoCards)
+			r.Post("/photos/{id}/like", s.likePhoto)
+			r.Delete("/photos/{id}/like", s.likePhoto)
+			r.Get("/friends", s.friendLists)
+			r.Post("/friends", s.requestFriend)
+			r.Post("/friends/{id}/accept", s.acceptFriend)
+			r.Post("/friends/{id}/decline", s.declineFriend)
+			r.Delete("/friends/{id}", s.removeFriend)
+			r.Get("/messages", s.listMessages)
+			r.Post("/messages", s.sendMessage)
 			r.Post("/shares", s.createShare)
 			r.Get("/me/shares", s.listMine)
 			r.Post("/shares/{id}/uploads", s.uploads)
@@ -278,7 +287,7 @@ func (s *Server) photoCards(w http.ResponseWriter, r *http.Request) {
 		}
 		ids = append(ids, canonical)
 	}
-	cards, err := s.Store.PhotoCards(r.Context(), ids)
+	cards, err := s.Store.PhotoCards(r.Context(), ids, userID(r))
 	if err != nil {
 		writeStoreErr(w, err)
 		return
@@ -1119,6 +1128,8 @@ func writeStoreErr(w http.ResponseWriter, err error) {
 			code = "revoked"
 		}
 		writeJSON(w, http.StatusGone, errBody{code})
+	case errors.Is(err, store.ErrNotFriends):
+		writeJSON(w, http.StatusForbidden, errBody{"not_friends"})
 	case errors.Is(err, store.ErrBad):
 		writeJSON(w, http.StatusBadRequest, errBody{"bad_request"})
 	default:
@@ -1188,11 +1199,18 @@ func photoCardJSON(card store.PhotoCard) map[string]any {
 			savers = append(savers, saver)
 		}
 	}
+	likedBy := []any{}
+	for _, person := range card.LikedBy {
+		likedBy = append(likedBy, map[string]any{"id": person.UserID, "displayName": person.DisplayName})
+	}
 	return map[string]any{
-		"id":       card.ID,
-		"sharedBy": sharedBy,
-		"holders":  holders,
-		"savers":   savers,
+		"id":        card.ID,
+		"sharedBy":  sharedBy,
+		"holders":   holders,
+		"savers":    savers,
+		"likeCount": card.LikeCount,
+		"liked":     card.Liked,
+		"likedBy":   likedBy,
 	}
 }
 

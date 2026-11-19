@@ -760,6 +760,159 @@ func do(t *testing.T, client *http.Client, method, url, bearer, access string, b
 	return res
 }
 
+func TestLikesFriendsAndMessages(t *testing.T) {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		dsn = "postgres:///imgmesh_test?host=/var/run/postgresql"
+	}
+	ctx := context.Background()
+	st, err := store.Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(st.Close)
+	if err := st.Reset(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := "http://" + ln.Addr().String()
+	api := &Server{Store: st, Secret: bytes.Repeat([]byte{9}, 32), PublicBaseURL: base, Apple: fakeApple{"good-token": "sub-social"}, DiskFreeMin: 1}
+	srv := &http.Server{Handler: api.Handler()}
+	go srv.Serve(ln)
+	t.Cleanup(func() { srv.Close() })
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	sender := auth(t, client, base)
+	jia := registerNamed(t, client, base, "social-friend-jia01", "甲")
+	yi := registerNamed(t, client, base, "social-friend-yi0001", "乙")
+	bing := registerNamed(t, client, base, "social-friend-bing01", "丙")
+
+	master := bytes.Repeat([]byte{0x61}, 32)
+	shareID := bytes.Repeat([]byte{0x62}, 16)
+	access, err := seal.AccessTag(master, shareID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shareText := id.Encode(shareID)
+	accessText := id.Encode(access)
+	res := do(t, client, http.MethodPost, base+"/v1/shares", sender, "", map[string]string{
+		"id": shareText, "accessTag": accessText,
+	})
+	if res.StatusCode != 200 {
+		t.Fatalf("share %d %s", res.StatusCode, readBody(res))
+	}
+	res.Body.Close()
+	photo := fingerprint("liked-photo")
+	res = do(t, client, http.MethodPost, base+"/v1/shares/"+shareText+"/photos", sender, accessText, map[string]any{
+		"items": []map[string]string{{"sha256": photo, "kind": "shared"}},
+	})
+	if res.StatusCode != 204 {
+		t.Fatalf("claim %d %s", res.StatusCode, readBody(res))
+	}
+
+	res = do(t, client, http.MethodPost, base+"/v1/photos/"+photo+"/like", jia.Token, "", nil)
+	if res.StatusCode != 204 {
+		t.Fatalf("like %d %s", res.StatusCode, readBody(res))
+	}
+	res = do(t, client, http.MethodGet, base+"/v1/photos?id="+photo, jia.Token, "", nil)
+	body := readBody(res)
+	if res.StatusCode != 200 || !bytes.Contains(body, []byte(`"likeCount":1`)) || !bytes.Contains(body, []byte(`"liked":true`)) || !bytes.Contains(body, []byte("甲")) {
+		t.Fatalf("liked card %d %s", res.StatusCode, body)
+	}
+	res = do(t, client, http.MethodGet, base+"/v1/photos?id="+photo, yi.Token, "", nil)
+	body = readBody(res)
+	if !bytes.Contains(body, []byte(`"liked":false`)) {
+		t.Fatalf("peer like flag %s", body)
+	}
+	res = do(t, client, http.MethodDelete, base+"/v1/photos/"+photo+"/like", jia.Token, "", nil)
+	if res.StatusCode != 204 {
+		t.Fatalf("unlike %d", res.StatusCode)
+	}
+	missing := fingerprint("missing-photo")
+	res = do(t, client, http.MethodPost, base+"/v1/photos/"+missing+"/like", jia.Token, "", nil)
+	if res.StatusCode != 404 {
+		t.Fatalf("like missing %d %s", res.StatusCode, readBody(res))
+	}
+
+	res = do(t, client, http.MethodPost, base+"/v1/friends", jia.Token, "", map[string]string{"userId": yi.ID})
+	if res.StatusCode != 200 || !bytes.Contains(readBody(res), []byte(`"pending"`)) {
+		t.Fatal("request should stay pending")
+	}
+	res = do(t, client, http.MethodGet, base+"/v1/friends", yi.Token, "", nil)
+	body = readBody(res)
+	if !bytes.Contains(body, []byte("甲")) || !bytes.Contains(body, []byte(`"incoming"`)) {
+		t.Fatalf("incoming %s", body)
+	}
+	res = do(t, client, http.MethodPost, base+"/v1/friends/"+jia.ID+"/accept", yi.Token, "", nil)
+	if res.StatusCode != 204 {
+		t.Fatalf("accept %d %s", res.StatusCode, readBody(res))
+	}
+	res = do(t, client, http.MethodPost, base+"/v1/messages", jia.Token, "", map[string]string{"to": yi.ID, "body": "到了吗"})
+	if res.StatusCode != 201 || !bytes.Contains(readBody(res), []byte("到了吗")) {
+		t.Fatal("send failed")
+	}
+	res = do(t, client, http.MethodGet, base+"/v1/friends", yi.Token, "", nil)
+	if !bytes.Contains(readBody(res), []byte(`"unread":1`)) {
+		t.Fatal("unread missing")
+	}
+	res = do(t, client, http.MethodGet, base+"/v1/messages?with="+jia.ID, yi.Token, "", nil)
+	body = readBody(res)
+	if res.StatusCode != 200 || !bytes.Contains(body, []byte("到了吗")) {
+		t.Fatalf("thread %d %s", res.StatusCode, body)
+	}
+	res = do(t, client, http.MethodGet, base+"/v1/friends", yi.Token, "", nil)
+	if bytes.Contains(readBody(res), []byte(`"unread":1`)) {
+		t.Fatal("reading the thread should clear the unread count")
+	}
+	res = do(t, client, http.MethodPost, base+"/v1/messages", bing.Token, "", map[string]string{"to": jia.ID, "body": "你好"})
+	if res.StatusCode != 403 || !bytes.Contains(readBody(res), []byte("not_friends")) {
+		t.Fatal("stranger should not message")
+	}
+	res = do(t, client, http.MethodPost, base+"/v1/friends", jia.Token, "", map[string]string{"userId": jia.ID})
+	if res.StatusCode != 400 {
+		t.Fatalf("self friend %d", res.StatusCode)
+	}
+	res = do(t, client, http.MethodPost, base+"/v1/friends", bing.Token, "", map[string]string{"userId": jia.ID})
+	if res.StatusCode != 200 {
+		t.Fatalf("bing request %d %s", res.StatusCode, readBody(res))
+	}
+	res = do(t, client, http.MethodPost, base+"/v1/friends/"+bing.ID+"/decline", jia.Token, "", nil)
+	if res.StatusCode != 204 {
+		t.Fatalf("decline %d %s", res.StatusCode, readBody(res))
+	}
+	res = do(t, client, http.MethodPost, base+"/v1/messages", jia.Token, "", map[string]string{"to": yi.ID, "body": "   "})
+	if res.StatusCode != 400 {
+		t.Fatalf("blank message %d", res.StatusCode)
+	}
+}
+
+type namedUser struct {
+	Token string
+	ID    string
+}
+
+func registerNamed(t *testing.T, client *http.Client, base, device, name string) namedUser {
+	t.Helper()
+	res := do(t, client, http.MethodPost, base+"/v1/register", "", "", map[string]string{
+		"deviceId": device, "displayName": name, "platform": "web",
+	})
+	if res.StatusCode != 201 {
+		t.Fatalf("register %s %d %s", name, res.StatusCode, readBody(res))
+	}
+	var body struct {
+		Token string `json:"token"`
+		User  struct {
+			ID string `json:"id"`
+		} `json:"user"`
+	}
+	json.NewDecoder(res.Body).Decode(&body)
+	res.Body.Close()
+	return namedUser{Token: body.Token, ID: body.User.ID}
+}
+
 func httpGet(t *testing.T, client *http.Client, url string) []byte {
 	t.Helper()
 	res, err := client.Get(url)

@@ -62,6 +62,49 @@ struct RootView: View {
                             Text("分享了 \(person.sharedCount) 张，保存了 \(person.savedCount) 张")
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
+                            if person.id != model.session?.userID {
+                                Button("加好友") { Task { await model.addFriend(person) } }
+                                    .font(.footnote)
+                            }
+                        }
+                    }
+                }
+                Section("好友") {
+                    if model.incoming.isEmpty && model.outgoing.isEmpty && model.friends.isEmpty {
+                        Text("还没有好友。在找人里可以加。").foregroundStyle(.secondary)
+                    }
+                    ForEach(model.incoming) { person in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(person.displayName)
+                            HStack {
+                                Button("接受") { Task { await model.decideFriend(person, action: "accept") } }
+                                Button("拒绝") { Task { await model.decideFriend(person, action: "decline") } }
+                            }
+                            .font(.footnote)
+                        }
+                    }
+                    ForEach(model.outgoing) { person in
+                        HStack {
+                            Text(person.displayName)
+                            Spacer()
+                            Text("已申请").font(.footnote).foregroundStyle(.secondary)
+                            Button("取消") { Task { await model.decideFriend(person, action: "decline") } }
+                                .font(.footnote)
+                        }
+                    }
+                    ForEach(model.friends) { person in
+                        Button {
+                            Task { await model.openChat(person.profile) }
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(person.displayName)
+                                if let last = person.lastBody, !last.isEmpty {
+                                    Text(last).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+                                }
+                                if let unread = person.unread, unread > 0 {
+                                    Text("\(unread) 条新消息").font(.footnote).foregroundStyle(Color(red: 0.05, green: 0.42, blue: 0.43))
+                                }
+                            }
                         }
                     }
                 }
@@ -103,6 +146,9 @@ struct RootView: View {
                 }
             }
             .task { await model.restore() }
+            .sheet(item: $model.chatPeer) { peer in
+                ChatView(peer: peer)
+            }
             .overlay(alignment: .bottom) {
                 if !model.errorMessage.isEmpty {
                     Text(model.errorMessage)
@@ -354,6 +400,12 @@ struct PhotoBrowser: View {
                 ForEach(card.savers) { saver in
                     Text(saverLine(saver))
                 }
+                Button(card.liked ? "已赞 · \(card.likeCount)" : "点赞 · \(card.likeCount)") {
+                    Task { await model.toggleLike(card.id) }
+                }
+                Text("谁点了赞").font(.headline)
+                Text(card.likedBy.isEmpty ? "还没有人点赞。" : card.likedBy.map(\.displayName).joined(separator: "、"))
+                    .foregroundStyle(card.likedBy.isEmpty ? .secondary : .primary)
             } else {
                 Text("这张照片还没有身份证记录。").foregroundStyle(.secondary)
             }
@@ -374,6 +426,62 @@ struct PhotoBrowser: View {
             return "\(saver.displayName)，保存自 \(from.displayName)"
         }
         return "\(saver.displayName)，自己留下的"
+    }
+}
+
+struct ChatView: View {
+    @EnvironmentObject private var model: AppModel
+    let peer: APIClient.PublicUser
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        if model.messages.isEmpty {
+                            Text("还没有消息。消息存在服务器上，只有你们两个好友能看。照片仍然是加密的。")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                        ForEach(model.messages) { message in
+                            HStack {
+                                if message.senderId == model.session?.userID { Spacer(minLength: 40) }
+                                Text(message.body)
+                                    .padding(10)
+                                    .background(message.senderId == model.session?.userID ? Color(red: 0.05, green: 0.42, blue: 0.43) : Color(red: 0.90, green: 0.93, blue: 0.92))
+                                    .foregroundStyle(message.senderId == model.session?.userID ? Color.white : Color.primary)
+                                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                                if message.senderId != model.session?.userID { Spacer(minLength: 40) }
+                            }
+                        }
+                    }
+                    .padding()
+                }
+                HStack {
+                    TextField("写一句", text: $model.messageDraft)
+                        .textFieldStyle(.roundedBorder)
+                    Button("发送") { Task { await model.sendChat() } }
+                        .disabled(model.messageDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                .padding()
+            }
+            .navigationTitle(peer.displayName)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("关闭") { model.chatPeer = nil }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button("解除好友") {
+                        guard let person = model.friends.first(where: { $0.id == peer.id }) else { return }
+                        Task {
+                            await model.decideFriend(person, action: "remove")
+                            model.chatPeer = nil
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

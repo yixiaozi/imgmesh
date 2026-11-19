@@ -39,6 +39,7 @@ var (
 	ErrLimit        = errors.New("limit")
 	ErrGone         = errors.New("gone")
 	ErrBad          = errors.New("bad request")
+	ErrNotFriends   = errors.New("not friends")
 )
 
 type Store struct {
@@ -122,9 +123,38 @@ type PhotoMember struct {
 	FromName    string
 }
 
+type PhotoLike struct {
+	UserID      string
+	DisplayName string
+}
+
 type PhotoCard struct {
-	ID     string
-	People []PhotoMember
+	ID        string
+	People    []PhotoMember
+	LikeCount int
+	Liked     bool
+	LikedBy   []PhotoLike
+}
+
+type SocialUser struct {
+	PublicUser
+	Unread   int
+	LastBody string
+	LastAt   time.Time
+}
+
+type SocialLists struct {
+	Friends  []SocialUser
+	Incoming []SocialUser
+	Outgoing []SocialUser
+}
+
+type DirectMessage struct {
+	ID          string
+	SenderID    string
+	RecipientID string
+	Body        string
+	CreatedAt   time.Time
 }
 
 type Person struct {
@@ -168,7 +198,7 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 func (s *Store) Close() { s.pool.Close() }
 
 func (s *Store) Reset(ctx context.Context) error {
-	_, err := s.pool.Exec(ctx, `TRUNCATE follows, photo_people, photo_cards, holdings, events, objects, shares, sessions, devices, users CASCADE`)
+	_, err := s.pool.Exec(ctx, `TRUNCATE message_reads, messages, friendships, photo_likes, follows, photo_people, photo_cards, holdings, events, objects, shares, sessions, devices, users CASCADE`)
 	return err
 }
 
@@ -453,7 +483,7 @@ func (s *Store) ClaimPhotos(ctx context.Context, shareID []byte, userID, ownerID
 	return tx.Commit(ctx)
 }
 
-func (s *Store) PhotoCards(ctx context.Context, ids []string) ([]PhotoCard, error) {
+func (s *Store) PhotoCards(ctx context.Context, ids []string, viewerID string) ([]PhotoCard, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT p.photo_id, u.id::text, u.display_name, u.city, p.shared, p.saved,
 		       COALESCE(fu.id::text, ''), COALESCE(fu.display_name, '')
@@ -490,9 +520,85 @@ func (s *Store) PhotoCards(ctx context.Context, ids []string) ([]PhotoCard, erro
 		if people == nil {
 			people = []PhotoMember{}
 		}
-		out = append(out, PhotoCard{ID: photoID, People: people})
+		out = append(out, PhotoCard{ID: photoID, People: people, LikedBy: []PhotoLike{}})
+	}
+	if err := s.attachLikes(ctx, out, viewerID); err != nil {
+		return nil, err
 	}
 	return out, nil
+}
+
+func (s *Store) attachLikes(ctx context.Context, cards []PhotoCard, viewerID string) error {
+	if len(cards) == 0 {
+		return nil
+	}
+	ids := make([]string, len(cards))
+	for i, card := range cards {
+		ids[i] = card.ID
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT l.photo_id, u.id::text, u.display_name
+		FROM photo_likes l
+		JOIN users u ON u.id = l.user_id
+		WHERE l.photo_id = ANY($1::text[])
+		ORDER BY l.created_at
+	`, ids)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	byID := map[string][]PhotoLike{}
+	for rows.Next() {
+		var photoID string
+		var like PhotoLike
+		if err := rows.Scan(&photoID, &like.UserID, &like.DisplayName); err != nil {
+			return err
+		}
+		byID[photoID] = append(byID[photoID], like)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for i := range cards {
+		likes := byID[cards[i].ID]
+		cards[i].LikeCount = len(likes)
+		if len(likes) > 12 {
+			cards[i].LikedBy = likes[:12]
+		} else if likes != nil {
+			cards[i].LikedBy = likes
+		}
+		for _, like := range likes {
+			if like.UserID == viewerID {
+				cards[i].Liked = true
+				break
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Store) SetLike(ctx context.Context, photoID, userID string, on bool) error {
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		return ErrBad
+	}
+	var exists bool
+	err = s.pool.QueryRow(ctx, `SELECT true FROM photo_cards WHERE id=$1`, photoID).Scan(&exists)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if !on {
+		_, err = s.pool.Exec(ctx, `DELETE FROM photo_likes WHERE photo_id=$1 AND user_id=$2`, photoID, uid)
+		return err
+	}
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO photo_likes (photo_id, user_id) VALUES ($1, $2)
+		ON CONFLICT DO NOTHING
+	`, photoID, uid)
+	return err
 }
 
 func (s *Store) BindApple(ctx context.Context, userID, sub string) error {

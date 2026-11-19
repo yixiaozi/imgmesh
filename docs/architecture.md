@@ -198,6 +198,16 @@ PostgreSQL。标识列存原始字节或存 base64url 均可，但全库只选�
   - `saved`：这个人保存过这张照片
   - `from_user_id`：这份副本保存自谁。第一次记下之后不再改，所以后来再分享也不会把来源冲掉
   - `share_id`：最近一次登记时的分享
+- `photo_likes`
+  - `photo_id` + `user_id`：一个人对一张照片身份证点一次赞
+- `friendships`
+  - `user_low` + `user_high`：两个用户的一对关系，较小的 id 放在前面
+  - `requester_id`：谁先申请
+  - `status`：`pending` 或 `accepted`。对方再申请一次，或点接受，就变成好友
+- `messages`
+  - `sender_id`、`recipient_id`、`body`：好友之间的文字。正文存在服务器上，方便换设备继续看；只有这对好友能读写。照片本身仍然只存密文
+- `message_reads`
+  - `user_id` + `peer_id`：这个人读到对方消息的时间，用来算未读条数
 
 清单里的 `items[].sha256` 是可选项，值与身份证相同。旧清单没有这个字段时，客户端在解开原图后自己计算。
 
@@ -214,7 +224,14 @@ PostgreSQL。标识列存原始字节或存 base64url 均可，但全库只选�
 - `GET /v1/me`、`PATCH /v1/me`：查看和修改自己的名称、介绍、城市、联系方式
 - `GET /v1/users?q=`：按名称、城市或联系方式找人
 - `GET /v1/users/{id}`：查看对方的公开资料，以及分享、保存过的张数
-- `GET /v1/photos?id=`：批量取照片身份证。返回谁分享了、谁有、谁保存了、保存自谁
+- `GET /v1/photos?id=`：批量取照片身份证。返回谁分享了、谁有、谁保存了、保存自谁，以及赞的数量、自己是否赞过、最近点赞的人
+- `POST /v1/photos/{id}/like`、`DELETE /v1/photos/{id}/like`：给一张已经登记的照片点赞或取消。照片还没有身份证时返回 `not_found`
+- `GET /v1/friends`：好友、收到的申请、发出的申请。好友带上最后一条消息和未读数
+- `POST /v1/friends`：向 `{userId}` 发申请。对方已经申请过自己时，这一次直接成为好友
+- `POST /v1/friends/{id}/accept`、`POST /v1/friends/{id}/decline`：接受或拒绝申请。拒绝也会取消自己发出的申请
+- `DELETE /v1/friends/{id}`：解除好友
+- `GET /v1/messages?with=`：读取和某位好友的最近 50 条消息，并记为已读。还不是好友时返回 `not_friends`
+- `POST /v1/messages`：给好友发一条不超过 1000 字的消息
 - `POST /v1/shares/{id}/photos`：登记这组照片。发送者用 `shared`，保存的人用 `saved`
 - `POST /v1/auth/apple`：校验 Sign in with Apple。带上现有会话时，把 Apple 绑到这个用户；没有会话时仍会建立发送者账号
 - `POST /v1/shares`：创建分享，保存 `access_tag`，按配额预占

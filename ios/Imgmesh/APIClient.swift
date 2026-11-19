@@ -15,6 +15,7 @@ struct APIClient {
     }
 
     struct AccountUser: Decodable {
+        var id: String
         var displayName: String
         var bio: String?
         var city: String?
@@ -53,6 +54,34 @@ struct APIClient {
         var sharedBy: [NamedUser]
         var holders: [PhotoHolder]
         var savers: [PhotoHolder]
+        var likeCount: Int
+        var liked: Bool
+        var likedBy: [NamedUser]
+    }
+
+    struct SocialUser: Decodable, Identifiable {
+        var id: String
+        var displayName: String
+        var bio: String
+        var city: String
+        var contact: String
+        var sharedCount: Int
+        var savedCount: Int
+        var unread: Int?
+        var lastBody: String?
+        var lastAt: String?
+
+        var profile: PublicUser {
+            PublicUser(id: id, displayName: displayName, bio: bio, city: city, contact: contact, sharedCount: sharedCount, savedCount: savedCount)
+        }
+    }
+
+    struct DirectMessage: Decodable, Identifiable {
+        var id: String
+        var senderId: String
+        var recipientId: String
+        var body: String
+        var createdAt: String
     }
 
     func register(deviceID: String, displayName: String) async throws -> Account {
@@ -80,6 +109,44 @@ struct APIClient {
         let escaped = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
         let body: Body = try await send(path: "/v1/users?q=\(escaped)", method: "GET", token: token, access: nil, payload: nil)
         return body.users
+    }
+
+    func setLike(token: String, photoID: String, on: Bool) async throws {
+        try await sendEmpty(path: "/v1/photos/\(photoID)/like", method: on ? "POST" : "DELETE", token: token, access: nil, payload: nil)
+    }
+
+    struct FriendLists: Decodable {
+        var friends: [SocialUser]
+        var incoming: [SocialUser]
+        var outgoing: [SocialUser]
+    }
+
+    func friends(token: String) async throws -> FriendLists {
+        try await send(path: "/v1/friends", method: "GET", token: token, access: nil, payload: nil)
+    }
+
+    func requestFriend(token: String, userID: String) async throws -> String {
+        struct Body: Decodable { var status: String }
+        let body: Body = try await send(path: "/v1/friends", method: "POST", token: token, access: nil, payload: ["userId": userID])
+        return body.status
+    }
+
+    func respondFriend(token: String, userID: String, action: String) async throws {
+        if action == "remove" {
+            try await sendEmpty(path: "/v1/friends/\(userID)", method: "DELETE", token: token, access: nil, payload: nil)
+            return
+        }
+        try await sendEmpty(path: "/v1/friends/\(userID)/\(action)", method: "POST", token: token, access: nil, payload: nil)
+    }
+
+    func messages(token: String, userID: String) async throws -> [DirectMessage] {
+        struct Body: Decodable { var messages: [DirectMessage] }
+        let body: Body = try await send(path: "/v1/messages?with=\(userID)", method: "GET", token: token, access: nil, payload: nil)
+        return body.messages
+    }
+
+    func sendMessage(token: String, to: String, body: String) async throws -> DirectMessage {
+        try await send(path: "/v1/messages", method: "POST", token: token, access: nil, payload: ["to": to, "body": body])
     }
 
     func photoCards(token: String, ids: [String]) async throws -> [PhotoCard] {
@@ -267,6 +334,7 @@ func apiMessage(_ error: Error) -> String {
         case "name_taken": return "这个名称已经有人用了，换一个。"
         case "name_required": return "先登记一个名称。"
         case "apple_required": return "先用 Apple 登录，再分享照片。"
+        case "not_friends": return "先成为好友，才能发消息。"
         default: return "请求没有完成。"
         }
     }

@@ -3,17 +3,25 @@ import {
   fetchCiphertext,
   loadAccount,
   loadUser,
+  loadFriends,
+  loadMessages,
   photoCards,
   register,
+  requestFriend,
+  respondFriend,
   resume,
   saveAccount,
   saveProfile,
   searchUsers,
+  sendMessage,
+  setLike,
   type Account,
   type Activity,
   type ActivityPerson,
+  type DirectMessage,
   type PhotoCard,
   type PublicUser,
+  type SocialUser,
 } from "./api";
 import { accessTag, aad, decode, decrypt, derive, encode, encrypt, randomBytes, sha256, type Manifest, type ManifestItem } from "./crypto";
 import { zipStore } from "./zip";
@@ -47,6 +55,13 @@ const state: {
   owner: boolean;
   autoSave: boolean;
   adding: boolean;
+  socialOpen: boolean;
+  friends: SocialUser[];
+  incoming: SocialUser[];
+  outgoing: SocialUser[];
+  chatWith: string;
+  messages: DirectMessage[];
+  messageDraft: string;
 } = {
   photos: [],
   cards: {},
@@ -64,9 +79,17 @@ const state: {
   owner: false,
   autoSave: false,
   adding: false,
+  socialOpen: false,
+  friends: [],
+  incoming: [],
+  outgoing: [],
+  chatWith: "",
+  messages: [],
+  messageDraft: "",
 };
 
 setInterval(() => void refreshShare(), 15000);
+setInterval(() => void refreshSocial(false), 8000);
 
 document.addEventListener("keydown", (event) => {
   if (state.active < 0) return;
@@ -99,6 +122,7 @@ function render() {
         <label>找人 <input name="q" maxlength="24" value="${escapeHTML(state.peopleQuery)}" placeholder="名称、城市或联系方式" /></label>
         <button class="btn" type="submit">查找</button>
       </form>
+      <button class="btn" id="open-social" type="button">${escapeHTML(friendLabel())}</button>
     </header>
     <main class="viewer">
       <h1>${escapeHTML(title)}</h1>
@@ -106,6 +130,7 @@ function render() {
       <p class="viewer-note">${escapeHTML(state.registeredNote)}</p>
       <p class="account-error">${escapeHTML(state.accountError)}</p>
       <section class="people" id="people"></section>
+      <section class="social" id="social"></section>
       <div class="viewer-actions">
         <button class="btn btn-primary" id="save-all" type="button" ${state.photos.length && !state.adding ? "" : "disabled"}>全部下载</button>
         <label class="auto-save"><input id="auto-save" type="checkbox" ${state.autoSave ? "checked" : ""}/> 自动下载以后新增的照片</label>
@@ -146,6 +171,7 @@ function render() {
   });
   renderBrowser(active);
   renderPeople();
+  renderSocial();
   document.querySelector("#save-all")?.addEventListener("click", () => void saveAll());
   document.querySelector<HTMLInputElement>("#auto-save")?.addEventListener("change", (event) => {
     void setAuto((event.currentTarget as HTMLInputElement).checked);
@@ -170,6 +196,12 @@ function render() {
     event.preventDefault();
     const data = new FormData(event.currentTarget as HTMLFormElement);
     void findPeople(String(data.get("q") ?? ""));
+  });
+  document.querySelector("#open-social")?.addEventListener("click", () => {
+    state.socialOpen = !state.socialOpen;
+    if (!state.socialOpen) state.chatWith = "";
+    render();
+    if (state.socialOpen) void refreshSocial(true);
   });
   renderActivity();
 }
@@ -235,6 +267,10 @@ function renderBrowser(active: Photo | undefined) {
     state.active = -1;
     render();
   });
+  root.querySelector<HTMLButtonElement>("[data-like]")?.addEventListener("click", (event) => {
+    const button = event.currentTarget as HTMLButtonElement;
+    void toggleLike(button.dataset.like ?? "", button.dataset.liked !== "1");
+  });
   root.querySelectorAll<HTMLButtonElement>("[data-user]").forEach((button) => {
     button.addEventListener("click", () => void openPerson(button.dataset.user ?? ""));
   });
@@ -272,11 +308,204 @@ function cardBody(card: PhotoCard | undefined): string {
     <p><strong>${card.sharedBy.length ? "已分享" : "还没分享"}</strong> · ${shared}</p>
     <h3>谁有这张</h3><ul>${holders}</ul>
     <h3>谁保存了</h3><ul>${savers}</ul>
+    <h3>谁点了赞</h3>
+    <p><button class="btn" type="button" data-like="${escapeHTML(card.id)}" data-liked="${card.liked ? "1" : "0"}">${card.liked ? "已赞" : "点赞"} · ${card.likeCount}</button></p>
+    <ul>${
+      card.likedBy.length
+        ? card.likedBy.map((person) => `<li>${personButton(person.id, person.displayName)}</li>`).join("")
+        : "<li>还没有人点赞。</li>"
+    }</ul>
   `;
 }
 
 function personButton(id: string, name: string): string {
   return `<button type="button" class="person-link" data-user="${escapeHTML(id)}">${escapeHTML(name || "未命名")}</button>`;
+}
+
+function friendLabel(): string {
+  const unread = state.incoming.length + state.friends.reduce((sum, person) => sum + (person.unread ?? 0), 0);
+  return unread ? `好友 · ${unread}` : "好友";
+}
+
+function friendActions(id: string): string {
+  if (!id || state.account?.user.id === id) return "";
+  if (state.friends.some((person) => person.id === id)) {
+    return `<button type="button" class="btn btn-primary" data-chat="${escapeHTML(id)}">发消息</button>`;
+  }
+  if (state.incoming.some((person) => person.id === id)) {
+    return `<button type="button" class="btn btn-primary" data-accept="${escapeHTML(id)}">接受</button> <button type="button" class="btn" data-decline="${escapeHTML(id)}">拒绝</button>`;
+  }
+  if (state.outgoing.some((person) => person.id === id)) {
+    return `<button type="button" class="btn" data-cancel="${escapeHTML(id)}">取消申请</button>`;
+  }
+  return `<button type="button" class="btn" data-add="${escapeHTML(id)}">加好友</button>`;
+}
+
+function bindPeople(root: ParentNode) {
+  root.querySelectorAll<HTMLButtonElement>("[data-user]").forEach((button) => {
+    button.addEventListener("click", () => void openPerson(button.dataset.user ?? ""));
+  });
+  root.querySelectorAll<HTMLButtonElement>("[data-add]").forEach((button) => {
+    button.addEventListener("click", () => void addFriend(button.dataset.add ?? ""));
+  });
+  root.querySelectorAll<HTMLButtonElement>("[data-accept]").forEach((button) => {
+    button.addEventListener("click", () => void decideFriend(button.dataset.accept ?? "", "accept"));
+  });
+  root.querySelectorAll<HTMLButtonElement>("[data-decline]").forEach((button) => {
+    button.addEventListener("click", () => void decideFriend(button.dataset.decline ?? "", "decline"));
+  });
+  root.querySelectorAll<HTMLButtonElement>("[data-cancel]").forEach((button) => {
+    button.addEventListener("click", () => void decideFriend(button.dataset.cancel ?? "", "decline"));
+  });
+  root.querySelectorAll<HTMLButtonElement>("[data-chat]").forEach((button) => {
+    button.addEventListener("click", () => void openChat(button.dataset.chat ?? ""));
+  });
+}
+
+function renderSocial() {
+  const root = document.querySelector<HTMLElement>("#social");
+  if (!root) return;
+  if (!state.socialOpen) {
+    root.hidden = true;
+    root.innerHTML = "";
+    return;
+  }
+  root.hidden = false;
+  if (state.chatWith) {
+    const peer = [...state.friends, ...state.incoming, ...state.outgoing, state.person].find((person) => person?.id === state.chatWith);
+    const bubbles = state.messages
+      .map((msg) => {
+        const mine = msg.senderId === state.account?.user.id;
+        return `<p class="bubble ${mine ? "mine" : "theirs"}">${escapeHTML(msg.body)}</p>`;
+      })
+      .join("");
+    root.innerHTML = `
+      <div class="social-head"><button class="btn" id="back-friends" type="button">返回好友</button><h2>${escapeHTML(peer?.displayName || "好友")}</h2><button class="btn" id="unfriend" type="button">解除好友</button></div>
+      <div class="thread">${bubbles || '<p class="viewer-note">还没有消息。</p>'}</div>
+      <form class="composer" id="composer">
+        <input name="body" maxlength="1000" value="${escapeHTML(state.messageDraft)}" placeholder="写一句" />
+        <button class="btn btn-primary" type="submit">发送</button>
+      </form>
+      <p class="viewer-note">消息存在服务器上，只有你们两个好友能看。照片仍然是加密的。</p>
+    `;
+    const thread = root.querySelector<HTMLElement>(".thread");
+    if (thread) thread.scrollTop = thread.scrollHeight;
+    root.querySelector("#back-friends")?.addEventListener("click", () => {
+      state.chatWith = "";
+      state.messages = [];
+      render();
+    });
+    root.querySelector("#unfriend")?.addEventListener("click", () => {
+      const id = state.chatWith;
+      state.chatWith = "";
+      state.messages = [];
+      void decideFriend(id, "remove");
+    });
+    const input = root.querySelector<HTMLInputElement>('input[name="body"]');
+    input?.addEventListener("input", () => {
+      state.messageDraft = input.value;
+    });
+    root.querySelector<HTMLFormElement>("#composer")?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const data = new FormData(event.currentTarget as HTMLFormElement);
+      void postMessage(String(data.get("body") ?? ""));
+    });
+    return;
+  }
+  const row = (person: SocialUser, extra: string) =>
+    `<li><button type="button" class="person-link" data-user="${escapeHTML(person.id)}">${escapeHTML(person.displayName)}</button>${person.unread ? ` · ${person.unread} 条新消息` : ""}${person.lastBody ? ` · ${escapeHTML(person.lastBody)}` : ""} ${extra}</li>`;
+  root.innerHTML = `
+    <h2>好友</h2>
+    <h3>等你接受</h3>
+    <ul>${state.incoming.length ? state.incoming.map((person) => row(person, friendActions(person.id))).join("") : "<li>没有新的申请。</li>"}</ul>
+    <h3>已发出</h3>
+    <ul>${state.outgoing.length ? state.outgoing.map((person) => row(person, friendActions(person.id))).join("") : "<li>没有待对方接受的申请。</li>"}</ul>
+    <h3>可以发消息</h3>
+    <ul>${state.friends.length ? state.friends.map((person) => row(person, friendActions(person.id))).join("") : "<li>还没有好友。在找人里可以加。</li>"}</ul>
+  `;
+  bindPeople(root);
+}
+
+async function refreshSocial(force: boolean) {
+  if (!state.account) return;
+  try {
+    const lists = await loadFriends(state.account.token);
+    state.friends = lists.friends;
+    state.incoming = lists.incoming;
+    state.outgoing = lists.outgoing;
+    if (state.chatWith) state.messages = await loadMessages(state.account.token, state.chatWith);
+  } catch (err) {
+    if (force) state.accountError = accountMessage(err);
+  }
+  const typing = document.activeElement instanceof HTMLInputElement || document.activeElement instanceof HTMLTextAreaElement;
+  if (state.socialOpen && (force || !typing)) render();
+  else {
+    const button = document.querySelector("#open-social");
+    if (button) button.textContent = friendLabel();
+  }
+}
+
+async function addFriend(id: string) {
+  if (!state.account || !id) return;
+  try {
+    const status = await requestFriend(state.account.token, id);
+    state.accountError = "";
+    state.registeredNote = status === "accepted" ? "已经是好友，可以发消息了。" : "申请已发出。对方接受后就能发消息。";
+    state.socialOpen = true;
+    await refreshSocial(true);
+  } catch (err) {
+    state.accountError = accountMessage(err);
+    render();
+  }
+}
+
+async function decideFriend(id: string, action: "accept" | "decline" | "remove") {
+  if (!state.account || !id) return;
+  try {
+    await respondFriend(state.account.token, id, action);
+    state.accountError = "";
+    await refreshSocial(true);
+  } catch (err) {
+    state.accountError = accountMessage(err);
+    render();
+  }
+}
+
+async function openChat(id: string) {
+  state.chatWith = id;
+  state.socialOpen = true;
+  state.messageDraft = "";
+  state.messages = [];
+  await refreshSocial(true);
+}
+
+async function postMessage(body: string) {
+  if (!state.account || !state.chatWith) return;
+  const text = body.trim();
+  if (!text) return;
+  try {
+    const message = await sendMessage(state.account.token, state.chatWith, text);
+    state.messages = [...state.messages, message];
+    state.messageDraft = "";
+    state.accountError = "";
+    render();
+  } catch (err) {
+    state.accountError = err instanceof Error && err.message === "not_friends" ? "先成为好友，才能发消息。" : accountMessage(err);
+    render();
+  }
+}
+
+async function toggleLike(id: string, on: boolean) {
+  if (!state.account || !id) return;
+  try {
+    await setLike(state.account.token, id, on);
+    await refreshCards();
+    state.accountError = "";
+    render();
+  } catch (err) {
+    state.accountError = accountMessage(err);
+    render();
+  }
 }
 
 function renderPeople() {
@@ -290,16 +519,14 @@ function renderPeople() {
   const list = state.people
     .map(
       (person) =>
-        `<li><button type="button" class="person-link" data-user="${escapeHTML(person.id)}">${escapeHTML(person.displayName)}</button> · ${escapeHTML(person.city || "未填城市")} · 分享 ${person.sharedCount} · 保存 ${person.savedCount}</li>`,
+        `<li><button type="button" class="person-link" data-user="${escapeHTML(person.id)}">${escapeHTML(person.displayName)}</button> · ${escapeHTML(person.city || "未填城市")} · 分享 ${person.sharedCount} · 保存 ${person.savedCount} ${friendActions(person.id)}</li>`,
     )
     .join("");
   const profile = state.person
-    ? `<article class="person-card"><h2>${escapeHTML(state.person.displayName)}</h2><p>${escapeHTML(state.person.bio || "还没有介绍")}</p><p>${escapeHTML(state.person.city || "未填城市")} · ${escapeHTML(state.person.contact || "未填联系方式")}</p><p>分享了 ${state.person.sharedCount} 张，保存了 ${state.person.savedCount} 张。</p></article>`
+    ? `<article class="person-card"><h2>${escapeHTML(state.person.displayName)}</h2><p>${escapeHTML(state.person.bio || "还没有介绍")}</p><p>${escapeHTML(state.person.city || "未填城市")} · ${escapeHTML(state.person.contact || "未填联系方式")}</p><p>分享了 ${state.person.sharedCount} 张，保存了 ${state.person.savedCount} 张。</p><p class="friend-actions">${friendActions(state.person.id)}</p></article>`
     : "";
   root.innerHTML = `${profile}<ul>${list}</ul>`;
-  root.querySelectorAll<HTMLButtonElement>("[data-user]").forEach((button) => {
-    button.addEventListener("click", () => void openPerson(button.dataset.user ?? ""));
-  });
+  bindPeople(root);
 }
 
 function tileLabel(photo: Photo): string {
@@ -307,10 +534,11 @@ function tileLabel(photo: Photo): string {
   if (!card) return photo.sha256 ? "身份证" : "照片";
   const shared = card.sharedBy.length > 0;
   const count = card.holders.length;
-  if (shared && count) return `已分享 · ${count} 人有`;
-  if (shared) return "已分享";
-  if (count) return `${count} 人有`;
-  return "未分享";
+  const likes = card.likeCount ? ` · ${card.likeCount} 赞` : "";
+  if (shared && count) return `已分享 · ${count} 人有${likes}`;
+  if (shared) return `已分享${likes}`;
+  if (count) return `${count} 人有${likes}`;
+  return likes ? `${card.likeCount} 赞` : "未分享";
 }
 
 function shortID(id: string): string {
@@ -384,6 +612,7 @@ async function start() {
     return;
   }
   await openShare();
+  void refreshSocial(false);
 }
 
 async function signUp(name: string) {
@@ -397,6 +626,7 @@ async function signUp(name: string) {
       : "";
     render();
     await openShare();
+    void refreshSocial(false);
   } catch (err) {
     state.accountError = accountMessage(err);
     renderRegister();
@@ -519,6 +749,7 @@ async function refreshCards() {
 function accountMessage(err: unknown): string {
   const code = err instanceof Error ? err.message : "";
   if (code === "name_taken") return "这个名称已经有人用了，换一个。";
+  if (code === "not_friends") return "先成为好友，才能发消息。";
   if (code === "bad_request") return "名称用 1 到 24 个字，介绍、城市和联系方式不要太长。";
   return "没有完成，可以再试一次。";
 }

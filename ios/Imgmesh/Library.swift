@@ -6,12 +6,14 @@ struct Session: Codable {
     var displayName: String
     var appleLinked: Bool
     var deviceID: String
+    var userID: String
 
-    init(token: String, displayName: String, appleLinked: Bool, deviceID: String) {
+    init(token: String, displayName: String, appleLinked: Bool, deviceID: String, userID: String = "") {
         self.token = token
         self.displayName = displayName
         self.appleLinked = appleLinked
         self.deviceID = deviceID
+        self.userID = userID
     }
 
     init(from decoder: Decoder) throws {
@@ -20,6 +22,20 @@ struct Session: Codable {
         displayName = try container.decodeIfPresent(String.self, forKey: .displayName) ?? ""
         appleLinked = try container.decodeIfPresent(Bool.self, forKey: .appleLinked) ?? true
         deviceID = try container.decodeIfPresent(String.self, forKey: .deviceID) ?? ""
+        userID = try container.decodeIfPresent(String.self, forKey: .userID) ?? ""
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(token, forKey: .token)
+        try container.encode(displayName, forKey: .displayName)
+        try container.encode(appleLinked, forKey: .appleLinked)
+        try container.encode(deviceID, forKey: .deviceID)
+        try container.encode(userID, forKey: .userID)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case token, displayName, appleLinked, deviceID, userID
     }
 }
 
