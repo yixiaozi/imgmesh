@@ -547,6 +547,171 @@ func TestPhotoIdentityAndPeople(t *testing.T) {
 	}
 }
 
+func TestAppendPhotosAndFollow(t *testing.T) {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		dsn = "postgres:///imgmesh_test?host=/var/run/postgresql"
+	}
+	ctx := context.Background()
+	st, err := store.Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(st.Close)
+	if err := st.Reset(ctx); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	disk, err := blob.NewDisk(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := "http://" + ln.Addr().String()
+	api := &Server{
+		Store: st, Disk: disk, Secret: bytes.Repeat([]byte{7}, 32), PublicBaseURL: base,
+		Apple: fakeApple{"good-token": "sub-append"}, MultipartThreshold: 1 << 20, PartSize: 1 << 20, DiskFreeMin: 1,
+	}
+	srv := &http.Server{Handler: api.Handler()}
+	go srv.Serve(ln)
+	t.Cleanup(func() { srv.Close() })
+	client := &http.Client{Timeout: 10 * time.Second}
+	sender := auth(t, client, base)
+
+	master := bytes.Repeat([]byte{0x41}, 32)
+	shareID := bytes.Repeat([]byte{0x42}, 16)
+	access, err := seal.AccessTag(master, shareID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shareText := id.Encode(shareID)
+	accessText := id.Encode(access)
+	res := do(t, client, http.MethodPost, base+"/v1/shares", sender, "", map[string]any{
+		"id": shareText, "accessTag": accessText,
+	})
+	if res.StatusCode != 200 {
+		t.Fatalf("share %d %s", res.StatusCode, readBody(res))
+	}
+	res.Body.Close()
+
+	uploadOne := func(plainText, manifestText string, objectFill, manifestFill byte) {
+		t.Helper()
+		plain := []byte(plainText)
+		objectID := bytes.Repeat([]byte{objectFill}, 16)
+		nonce := bytes.Repeat([]byte{0x11}, 12)
+		fileKey, _ := seal.Derive(master, shareID, seal.InfoFile)
+		aad, _ := seal.AAD(shareID, objectID)
+		ct, err := seal.Encrypt(fileKey, nonce, aad, plain)
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifestBody := []byte(manifestText)
+		manifestID := bytes.Repeat([]byte{manifestFill}, 16)
+		manifestNonce := bytes.Repeat([]byte{0x22}, 12)
+		manifestKey, _ := seal.Derive(master, shareID, seal.InfoManifest)
+		manifestAAD, _ := seal.AAD(shareID, manifestID)
+		manifestCT, err := seal.Encrypt(manifestKey, manifestNonce, manifestAAD, manifestBody)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res = do(t, client, http.MethodPost, base+"/v1/shares/"+shareText+"/uploads", sender, "", map[string]any{
+			"objects": []any{
+				map[string]any{"id": id.Encode(objectID), "kind": "original", "plaintextBytes": len(plain), "ciphertextBytes": len(ct)},
+				map[string]any{"id": id.Encode(manifestID), "kind": "manifest", "plaintextBytes": len(manifestBody), "ciphertextBytes": len(manifestCT)},
+			},
+		})
+		if res.StatusCode != 200 {
+			t.Fatalf("uploads %d %s", res.StatusCode, readBody(res))
+		}
+		var planned struct {
+			Uploads []struct {
+				ID    string `json:"id"`
+				Parts []struct {
+					URL string `json:"url"`
+				} `json:"parts"`
+			} `json:"uploads"`
+		}
+		json.NewDecoder(res.Body).Decode(&planned)
+		res.Body.Close()
+		blobs := map[string][]byte{id.Encode(objectID): ct, id.Encode(manifestID): manifestCT}
+		objects := []any{}
+		for _, up := range planned.Uploads {
+			if len(up.Parts) != 1 {
+				t.Fatalf("parts %d", len(up.Parts))
+			}
+			req, _ := http.NewRequest(http.MethodPut, up.Parts[0].URL, bytes.NewReader(blobs[up.ID]))
+			putRes, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if putRes.StatusCode != 200 {
+				t.Fatalf("put %d %s", putRes.StatusCode, readBody(putRes))
+			}
+			etag := putRes.Header.Get("ETag")
+			putRes.Body.Close()
+			objects = append(objects, map[string]any{
+				"id": up.ID, "byteSize": len(blobs[up.ID]),
+				"parts": []map[string]any{{"partNumber": 0, "etag": etag}},
+			})
+		}
+		res = do(t, client, http.MethodPost, base+"/v1/shares/"+shareText+"/uploads/complete", sender, "", map[string]any{
+			"objects": objects, "manifestObjectId": id.Encode(manifestID), "manifestNonce": id.Encode(manifestNonce),
+		})
+		if res.StatusCode != 204 {
+			t.Fatalf("complete %d %s", res.StatusCode, readBody(res))
+		}
+	}
+	uploadOne("first-photo-bytes-first-photo", `{"v":1,"title":"trip","items":[{"id":"a"}]}`, 0x31, 0x32)
+	res = do(t, client, http.MethodGet, base+"/v1/shares/"+shareText, sender, accessText, nil)
+	body := readBody(res)
+	if res.StatusCode != 200 || !bytes.Contains(body, []byte(`"photoCount":1`)) || !bytes.Contains(body, []byte(`"autoSave":false`)) {
+		t.Fatalf("after first %d %s", res.StatusCode, body)
+	}
+	uploadOne("second-photo-bytes-second-xx", `{"v":1,"title":"trip","items":[{"id":"a"},{"id":"b"}]}`, 0x33, 0x34)
+	res = do(t, client, http.MethodGet, base+"/v1/shares/"+shareText, sender, accessText, nil)
+	body = readBody(res)
+	if res.StatusCode != 200 || !bytes.Contains(body, []byte(`"photoCount":2`)) {
+		t.Fatalf("after append %d %s", res.StatusCode, body)
+	}
+
+	res = do(t, client, http.MethodPost, base+"/v1/register", "", "", map[string]string{
+		"deviceId": "append-viewer-device", "displayName": "后来的人", "platform": "web",
+	})
+	if res.StatusCode != 201 {
+		t.Fatalf("register %d %s", res.StatusCode, readBody(res))
+	}
+	var viewer struct {
+		Token string `json:"token"`
+	}
+	json.NewDecoder(res.Body).Decode(&viewer)
+	res.Body.Close()
+	res = do(t, client, http.MethodPost, base+"/v1/shares/"+shareText+"/follow", viewer.Token, accessText, nil)
+	if res.StatusCode != 204 {
+		t.Fatalf("follow %d %s", res.StatusCode, readBody(res))
+	}
+	res = do(t, client, http.MethodGet, base+"/v1/shares/"+shareText, viewer.Token, accessText, nil)
+	if !bytes.Contains(readBody(res), []byte(`"autoSave":true`)) {
+		t.Fatal("viewer should auto-save")
+	}
+	res = do(t, client, http.MethodGet, base+"/v1/shares/"+shareText+"/events", sender, "", nil)
+	recorded := readBody(res)
+	if !bytes.Contains(recorded, []byte("后来的人")) || !bytes.Contains(recorded, []byte(`"followers"`)) {
+		t.Fatalf("followers %s", recorded)
+	}
+	res = do(t, client, http.MethodDelete, base+"/v1/shares/"+shareText+"/follow", viewer.Token, accessText, nil)
+	if res.StatusCode != 204 {
+		t.Fatalf("unfollow %d", res.StatusCode)
+	}
+	res = do(t, client, http.MethodGet, base+"/v1/shares/"+shareText+"/events", sender, "", nil)
+	recorded = readBody(res)
+	if bytes.Contains(recorded, []byte("后来的人")) {
+		t.Fatalf("follower remained: %s", recorded)
+	}
+}
+
 func fingerprint(plain string) string {
 	sum := sha256.Sum256([]byte(plain))
 	return id.Encode(sum[:])

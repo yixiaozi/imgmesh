@@ -30,6 +30,47 @@ struct LocalShare: Codable, Identifiable {
     var role: String
     var photoCount: Int
     var createdAt: Date
+    var autoSave: Bool
+    var savedIDs: [String]
+
+    init(id: String, masterKey: String, title: String, role: String, photoCount: Int, createdAt: Date, autoSave: Bool = false, savedIDs: [String] = []) {
+        self.id = id
+        self.masterKey = masterKey
+        self.title = title
+        self.role = role
+        self.photoCount = photoCount
+        self.createdAt = createdAt
+        self.autoSave = autoSave
+        self.savedIDs = savedIDs
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        masterKey = try container.decode(String.self, forKey: .masterKey)
+        title = try container.decode(String.self, forKey: .title)
+        role = try container.decode(String.self, forKey: .role)
+        photoCount = try container.decode(Int.self, forKey: .photoCount)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        autoSave = try container.decodeIfPresent(Bool.self, forKey: .autoSave) ?? false
+        savedIDs = try container.decodeIfPresent([String].self, forKey: .savedIDs) ?? []
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(masterKey, forKey: .masterKey)
+        try container.encode(title, forKey: .title)
+        try container.encode(role, forKey: .role)
+        try container.encode(photoCount, forKey: .photoCount)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encode(autoSave, forKey: .autoSave)
+        try container.encode(savedIDs, forKey: .savedIDs)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, masterKey, title, role, photoCount, createdAt, autoSave, savedIDs
+    }
 }
 
 enum KeychainStore {

@@ -145,6 +145,7 @@ type Activity struct {
 	Viewed     []Person
 	Downloaded []Person
 	Phones     []Holding
+	Followers  []Person
 }
 
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
@@ -167,7 +168,7 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 func (s *Store) Close() { s.pool.Close() }
 
 func (s *Store) Reset(ctx context.Context) error {
-	_, err := s.pool.Exec(ctx, `TRUNCATE photo_people, photo_cards, holdings, events, objects, shares, sessions, devices, users CASCADE`)
+	_, err := s.pool.Exec(ctx, `TRUNCATE follows, photo_people, photo_cards, holdings, events, objects, shares, sessions, devices, users CASCADE`)
 	return err
 }
 
@@ -1013,6 +1014,7 @@ func (s *Store) Activity(ctx context.Context, shareID []byte) (Activity, error) 
 	act.Viewed = []Person{}
 	act.Downloaded = []Person{}
 	act.Phones = []Holding{}
+	act.Followers = []Person{}
 	rows, err := s.pool.Query(ctx, `
 		SELECT kind, client, COALESCE(display_name, ''), COALESCE(device_id, ''), created_at
 		FROM events WHERE share_id=$1 ORDER BY created_at
@@ -1057,7 +1059,56 @@ func (s *Store) Activity(ctx context.Context, shareID []byte) (Activity, error) 
 		}
 		act.Phones = append(act.Phones, h)
 	}
-	return act, phoneRows.Err()
+	if err := phoneRows.Err(); err != nil {
+		return act, err
+	}
+	followRows, err := s.pool.Query(ctx, `
+		SELECT u.display_name, COALESCE(d.platform, 'web'), f.created_at
+		FROM follows f
+		JOIN users u ON u.id = f.user_id
+		LEFT JOIN devices d ON d.user_id = u.id
+		WHERE f.share_id=$1
+		ORDER BY f.created_at
+	`, shareID)
+	if err != nil {
+		return act, err
+	}
+	defer followRows.Close()
+	for followRows.Next() {
+		var p Person
+		p.Count = 1
+		if err := followRows.Scan(&p.DisplayName, &p.Client, &p.At); err != nil {
+			return act, err
+		}
+		act.Followers = append(act.Followers, p)
+	}
+	return act, followRows.Err()
+}
+
+func (s *Store) SetFollow(ctx context.Context, shareID []byte, userID string, on bool) error {
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		return ErrBad
+	}
+	if !on {
+		_, err = s.pool.Exec(ctx, `DELETE FROM follows WHERE share_id=$1 AND user_id=$2`, shareID, uid)
+		return err
+	}
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO follows (share_id, user_id) VALUES ($1, $2)
+		ON CONFLICT DO NOTHING
+	`, shareID, uid)
+	return err
+}
+
+func (s *Store) Following(ctx context.Context, shareID []byte, userID string) (bool, error) {
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		return false, ErrBad
+	}
+	var n int
+	err = s.pool.QueryRow(ctx, `SELECT count(*) FROM follows WHERE share_id=$1 AND user_id=$2`, shareID, uid).Scan(&n)
+	return n > 0, err
 }
 
 func (s *Store) people(ctx context.Context, shareID []byte, kinds []string) ([]Person, error) {

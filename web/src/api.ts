@@ -4,6 +4,7 @@ export interface ShareMeta {
   totalBytes: number;
   revoked: boolean;
   expired: boolean;
+  autoSave?: boolean;
   owner?: PublicUser;
 }
 
@@ -64,6 +65,15 @@ export interface Activity {
   viewed: ActivityPerson[];
   downloaded: ActivityPerson[];
   phones: ActivityPerson[];
+  followers?: ActivityPerson[];
+}
+
+export interface UploadPlan {
+  id: string;
+  kind: string;
+  ready: boolean;
+  partSize?: number;
+  parts: { partNumber: number; url: string }[];
 }
 
 const deviceKey = "imgmesh-device";
@@ -199,6 +209,28 @@ export class Api {
     const res = await this.send(`/v1/shares/${this.shareId}/objects/${id}`);
     const body = (await res.json()) as { url: string };
     return body.url;
+  }
+
+  async follow(on: boolean): Promise<void> {
+    await this.send(`/v1/shares/${this.shareId}/follow`, { method: on ? "POST" : "DELETE" });
+  }
+
+  async reserve(objects: { id: string; kind: string; plaintextBytes: number; ciphertextBytes: number }[]): Promise<UploadPlan[]> {
+    const res = await this.send(`/v1/shares/${this.shareId}/uploads`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ objects }),
+    });
+    const body = (await res.json()) as { uploads: UploadPlan[] };
+    return body.uploads;
+  }
+
+  async complete(objects: { id: string; byteSize: number; parts: { partNumber: number; etag: string }[] }[], manifestID: string, nonce: string): Promise<void> {
+    await this.send(`/v1/shares/${this.shareId}/uploads/complete`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ objects, manifestObjectId: manifestID, manifestNonce: nonce }),
+    });
   }
 
   async claim(items: { sha256: string; kind: "shared" | "saved" }[]): Promise<void> {

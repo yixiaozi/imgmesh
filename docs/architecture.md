@@ -155,7 +155,7 @@ PostgreSQL。标识列存原始字节或存 base64url 均可，但全库只选�
 - `devices`
   - `id`：客户端生成一次并放在本机钥匙串或 localStorage，16 到 64 位
   - `user_id`：一台设备只对应一个用户
-  - `platform`：`ios` 或 `web`
+  - `platform`：`ios`、`web` 或 `desktop`
 - `shares`
   - `id`：即 `share_id`
   - `owner_id`
@@ -178,7 +178,7 @@ PostgreSQL。标识列存原始字节或存 base64url 均可，但全库只选�
   - `share_id`
   - `user_id`
   - `kind`：`view`、`download`、`save`、`remove`，以及旧数据里的 `open`
-  - `client`：`web`、`ios`
+  - `client`：`web`、`ios`、`desktop`
   - `display_name`：当时的注册名称
   - `device_id`
   - `created_at`
@@ -187,6 +187,9 @@ PostgreSQL。标识列存原始字节或存 base64url 均可，但全库只选�
   - `device_id`
   - `client`
   - `saved_at`：iPhone 存入相册的时间。从 imgmesh 移除不会删除这条，因为系统相册里的照片还在
+- `follows`
+  - `share_id` + `user_id`
+  - `created_at`：这个人选择了自动接收以后新增的照片。再打开同一条链接时，客户端只下载还没保存过的新照片
 - `photo_cards`
   - `id`：照片身份证。客户端对原图明文做 SHA-256，再编成 43 位 base64url。服务器只存这个指纹，不存像素
 - `photo_people`
@@ -206,7 +209,7 @@ PostgreSQL。标识列存原始字节或存 base64url 均可，但全库只选�
 
 全部在 `/v1`，由 Nginx 反代到本机 Go 进程。除创建会话和健康检查外，读分享的接口都要求 `X-Imgmesh-Access`。发送者管理接口要求会话。
 
-- `POST /v1/register`：用设备号和名称注册。同一设备再调一次返回原来的用户。名称重复返回 `name_taken`
+- `POST /v1/register`：用设备号和名称注册。`platform` 可以是 `ios`、`web` 或 `desktop`。同一设备再调一次返回原来的用户。名称重复返回 `name_taken`
 - `POST /v1/devices/session`：这台设备已经注册过时换一张会话
 - `GET /v1/me`、`PATCH /v1/me`：查看和修改自己的名称、介绍、城市、联系方式
 - `GET /v1/users?q=`：按名称、城市或联系方式找人
@@ -216,13 +219,14 @@ PostgreSQL。标识列存原始字节或存 base64url 均可，但全库只选�
 - `POST /v1/auth/apple`：校验 Sign in with Apple。带上现有会话时，把 Apple 绑到这个用户；没有会话时仍会建立发送者账号
 - `POST /v1/shares`：创建分享，保存 `access_tag`，按配额预占
 - `POST /v1/shares/{id}/uploads`：为一批对象签发 PUT 预签名。单对象明文超过 16 MiB 时改发 S3 multipart 的分片预签名
-- `POST /v1/shares/{id}/uploads/complete`：核对密文大小，标记对象可读。同一对象重复完成保持成功
-- `GET /v1/shares/{id}`：返回张数、总大小、是否过期或已撤销
+- `POST /v1/shares/{id}/uploads/complete`：核对密文大小，标记对象可读。同一对象重复完成保持成功。同一条分享可以再上传新照片和新的清单，链接和密钥不变
+- `POST /v1/shares/{id}/follow`、`DELETE /v1/shares/{id}/follow`：打开或关闭「自动下载以后新增的照片」
+- `GET /v1/shares/{id}`：返回张数、总大小、是否过期或已撤销，以及调用者是否打开了自动下载
 - `GET /v1/shares/{id}/manifest`：返回清单对象 id、`manifest_nonce` 和短时 GET 地址。对象 id 要参与 AAD，所以必须一起返回
 - `GET /v1/shares/{id}/objects/{oid}`：返回该对象的短时 GET 预签名
 - `POST /v1/shares/{id}/events`：已注册用户上报 `view`、`download`、`save`、`remove`。名称以服务器上的用户为准
 - `GET /v1/me/shares`：当前发送者的分享列表
-- `GET /v1/shares/{id}/events`：发送者查看 `viewed`、`downloaded`、`phones`
+- `GET /v1/shares/{id}/events`：发送者查看 `viewed`、`downloaded`、`phones`、`followers`
 - `DELETE /v1/shares/{id}`：发送者撤销，并删除对象存储中的密文
 
 预签名 PUT 有效期 15 分钟，GET 有效期 5 分钟。客户端把已完成的 multipart part 记在本地，中断后按未完成的 part 续传。
@@ -239,7 +243,7 @@ Vite + TypeScript，解密使用 WebCrypto。Nginx 把 `/s/*` 指到这个 SPA�
 
 ### iOS 接收端
 
-与发送端同一个 App。Universal Link 打开 `https://imgmesh.com/s/…`，片段里的密钥一并交给 App。解密后以「仅添加」权限写入系统相册，写入成功才上报 `save`。用户在 App 内移除这份分享时上报 `remove`。
+与发送端同一个 App。Universal Link 打开 `https://imgmesh.com/s/…`，片段里的密钥一并交给 App。解密后以「仅添加」权限写入系统相册，写入成功才上报 `save`。用户在 App 内移除这份分享时上报 `remove`。选择「保存到相册」或打开「自动保存新增照片」之后，再打开同一条链接会把后来加上的照片写入相册。
 
 ## 仓库与部署
 

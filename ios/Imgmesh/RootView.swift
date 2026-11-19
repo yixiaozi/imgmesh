@@ -139,6 +139,11 @@ struct GalleryView: View {
     @EnvironmentObject private var model: AppModel
     let share: LocalShare
     @State private var openID: String?
+    @State private var adding = false
+
+    private var live: LocalShare {
+        model.shares.first(where: { $0.id == share.id }) ?? share
+    }
 
     var body: some View {
         List {
@@ -160,21 +165,36 @@ struct GalleryView: View {
                 }
             }
             Section {
-                Button("保存到相册") { Task { await model.saveGallery(share) } }
+                Button("保存到相册") { Task { await model.saveGallery(live) } }
                     .disabled(model.gallery.isEmpty || model.busy)
-                Button("从 imgmesh 移除", role: .destructive) { Task { await model.remove(share) } }
-                if share.role == "sent" {
-                    Button("撤销链接", role: .destructive) { Task { await model.revoke(share) } }
+                Toggle("自动保存新增照片", isOn: Binding(
+                    get: { live.autoSave },
+                    set: { value in Task { await model.setAutoSave(live, value) } }
+                ))
+                .disabled(model.session == nil)
+                if live.role == "sent" {
+                    Button("添加照片") { adding = true }
+                        .disabled(model.busy || model.session?.appleLinked != true)
+                    Button("撤销链接", role: .destructive) { Task { await model.revoke(live) } }
                 }
+                Button("从 imgmesh 移除", role: .destructive) { Task { await model.remove(live) } }
             }
-            if share.role == "sent" {
+            if live.role == "sent" {
                 activitySection("谁查看过", model.activity.viewed)
                 activitySection("谁下载过", model.activity.downloaded)
-                activitySection("在这些手机里", model.activity.phones)
+                activitySection("保存在这些设备里", model.activity.phones)
+                activitySection("会自动下载新照片", model.activity.followers ?? [])
             }
         }
-        .navigationTitle(share.title)
-        .task { await model.loadGallery(share) }
+        .navigationTitle(live.title)
+        .task { await model.loadGallery(live) }
+        .sheet(isPresented: $adding) {
+            PhotoPicker { providers in
+                adding = false
+                Task { await model.addPhotos(providers: providers, to: live) }
+            }
+            .ignoresSafeArea()
+        }
         .sheet(isPresented: Binding(get: { openID != nil }, set: { if !$0 { openID = nil } })) {
             if let openID, let photo = model.gallery.first(where: { $0.id == openID }) {
                 PhotoBrowser(photo: photo, share: share)
@@ -230,9 +250,9 @@ struct GalleryView: View {
     }
 
     private func activityDetail(_ row: APIClient.ActivityRow) -> String {
-        let place = row.client == "ios" ? "iPhone" : "浏览器"
+        let place = row.client == "ios" ? "iPhone" : (row.client == "desktop" ? "电脑" : "浏览器")
         if let savedAt = row.savedAt, !savedAt.isEmpty {
-            return "\(place) · 已存进相册"
+            return row.client == "desktop" ? "\(place) · 已存进文件夹" : "\(place) · 已存进相册"
         }
         if let count = row.count {
             return "\(place) · \(count) 次"

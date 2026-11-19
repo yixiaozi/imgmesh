@@ -147,8 +147,20 @@ body {
 .viewer-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 0.6rem;
   margin: 1rem 0 1.2rem;
+}
+
+.auto-save {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--ink-soft);
+}
+
+.viewer-actions .btn input {
+  display: none;
 }
 
 .find,

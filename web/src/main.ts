@@ -15,7 +15,7 @@ import {
   type PhotoCard,
   type PublicUser,
 } from "./api";
-import { accessTag, aad, decode, decrypt, derive, encode, sha256, type Manifest, type ManifestItem } from "./crypto";
+import { accessTag, aad, decode, decrypt, derive, encode, encrypt, randomBytes, sha256, type Manifest, type ManifestItem } from "./crypto";
 import { zipStore } from "./zip";
 
 const app = document.querySelector<HTMLElement>("#app");
@@ -44,6 +44,9 @@ const state: {
   peopleQuery: string;
   people: PublicUser[];
   person: PublicUser | null;
+  owner: boolean;
+  autoSave: boolean;
+  adding: boolean;
 } = {
   photos: [],
   cards: {},
@@ -58,7 +61,12 @@ const state: {
   peopleQuery: "",
   people: [],
   person: null,
+  owner: false,
+  autoSave: false,
+  adding: false,
 };
+
+setInterval(() => void refreshShare(), 15000);
 
 document.addEventListener("keydown", (event) => {
   if (state.active < 0) return;
@@ -99,7 +107,9 @@ function render() {
       <p class="account-error">${escapeHTML(state.accountError)}</p>
       <section class="people" id="people"></section>
       <div class="viewer-actions">
-        <button class="btn btn-primary" id="save-all" type="button" ${state.photos.length ? "" : "disabled"}>全部下载</button>
+        <button class="btn btn-primary" id="save-all" type="button" ${state.photos.length && !state.adding ? "" : "disabled"}>全部下载</button>
+        <label class="auto-save"><input id="auto-save" type="checkbox" ${state.autoSave ? "checked" : ""}/> 自动下载以后新增的照片</label>
+        ${state.owner ? `<label class="btn">添加照片<input id="add-photos" type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif" multiple hidden ${state.adding ? "disabled" : ""}/></label>` : ""}
       </div>
       <div class="grid" id="grid"></div>
       <section class="browser" id="browser"></section>
@@ -137,6 +147,15 @@ function render() {
   renderBrowser(active);
   renderPeople();
   document.querySelector("#save-all")?.addEventListener("click", () => void saveAll());
+  document.querySelector<HTMLInputElement>("#auto-save")?.addEventListener("change", (event) => {
+    void setAuto((event.currentTarget as HTMLInputElement).checked);
+  });
+  document.querySelector<HTMLInputElement>("#add-photos")?.addEventListener("change", (event) => {
+    const input = event.currentTarget as HTMLInputElement;
+    const files = Array.from(input.files ?? []);
+    input.value = "";
+    void addFiles(files);
+  });
   document.querySelector<HTMLFormElement>("#profile")?.addEventListener("submit", (event) => {
     event.preventDefault();
     const data = new FormData(event.currentTarget as HTMLFormElement);
@@ -328,12 +347,13 @@ function renderRegister() {
 function renderActivity() {
   const root = document.querySelector<HTMLElement>("#activity");
   if (!root || !state.activity) return;
-  const { viewed, downloaded, phones } = state.activity;
+  const { viewed, downloaded, phones, followers } = state.activity;
   root.innerHTML = `
     <h2>这一组链接</h2>
     ${listBlock("谁查看过", viewed, (person) => `${person.count ?? 1} 次`)}
     ${listBlock("谁下载过", downloaded, (person) => `${person.count ?? 1} 次`)}
-    ${listBlock("在这些手机里", phones, () => "已存进相册")}
+    ${listBlock("保存在这些设备里", phones, (person) => (person.client === "desktop" ? "已存进文件夹" : "已存进相册"))}
+    ${listBlock("会自动下载新照片", followers ?? [], () => "以后新增的照片也会下载")}
   `;
 }
 
@@ -347,6 +367,7 @@ function listBlock(title: string, people: ActivityPerson[], extra: (person: Acti
 function clientLabel(client: string): string {
   if (client === "ios") return "iPhone";
   if (client === "web") return "浏览器";
+  if (client === "desktop") return "电脑";
   return client;
 }
 
@@ -445,6 +466,8 @@ async function openShare() {
     const meta = await api.meta();
     if (meta.revoked) throw new Error("revoked");
     if (meta.expired) throw new Error("expired");
+    state.owner = meta.owner?.id === state.account.user.id;
+    state.autoSave = Boolean(meta.autoSave);
     const listed = await api.manifest();
     const manifestKey = await derive(master, shareRaw, "imgmesh-manifest-v1");
     const manifestBytes = await decrypt(
@@ -468,6 +491,7 @@ async function openShare() {
     state.activity = await api.activity();
     await Promise.all(manifest.items.map((item, index) => loadPreview(index, item)));
     render();
+    await catchUp();
   } catch (err) {
     if (err instanceof Error && err.message === "unauthorized") {
       localStorage.removeItem("imgmesh-account");
@@ -573,6 +597,230 @@ async function saveOne(index: number) {
   render();
 }
 
+function savedKey(): string {
+  return `imgmesh-saved:${shareId}`;
+}
+
+function loadSaved(): string[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(savedKey()) || "[]") as string[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function storeSaved(ids: string[]) {
+  localStorage.setItem(savedKey(), JSON.stringify([...new Set(ids)]));
+}
+
+async function setAuto(on: boolean) {
+  if (!state.api) return;
+  state.autoSave = on;
+  state.accountError = "";
+  try {
+    await state.api.follow(on);
+    if (on) await catchUp();
+    else {
+      state.status = "已关闭自动下载。这条链接里的照片仍可以手动下载。";
+      render();
+    }
+  } catch (err) {
+    state.accountError = accountMessage(err);
+    render();
+  }
+}
+
+async function catchUp() {
+  if (!state.autoSave || !state.photos.length) return;
+  const saved = new Set(loadSaved());
+  const fresh = state.photos.filter((photo) => !saved.has(photo.id));
+  if (!fresh.length) return;
+  state.status = `正在自动下载 ${fresh.length} 张照片`;
+  render();
+  const names: string[] = [];
+  const files: { name: string; data: Uint8Array }[] = [];
+  for (const [index, item] of fresh.entries()) {
+    const data = await originalBytes(item);
+    item.sha256 = await sha256(data);
+    const name = uniqueName(item.name, index, names);
+    names.push(name);
+    files.push({ name, data });
+  }
+  download(zipStore(files), fresh.length === state.photos.length ? "imgmesh.zip" : "imgmesh-new.zip");
+  await rememberSaved(fresh);
+  storeSaved([...saved, ...fresh.map((photo) => photo.id)]);
+  await state.api?.event("download").catch(() => undefined);
+  state.activity = (await state.api?.activity()) ?? state.activity;
+  state.status = `已自动下载 ${fresh.length} 张照片。以后这条链接再增加照片，打开时也会自己下载。`;
+  render();
+}
+
+async function refreshShare() {
+  if (!state.api || !state.account || state.adding || !state.fileKey || !state.shareRaw) return;
+  try {
+    const meta = await state.api.meta();
+    state.autoSave = Boolean(meta.autoSave);
+    state.owner = meta.owner?.id === state.account.user.id;
+    if (meta.photoCount === state.photos.length) return;
+    const listed = await state.api.manifest();
+    const manifestKey = await derive(decode(keyParam), state.shareRaw, "imgmesh-manifest-v1");
+    const manifestBytes = await decrypt(
+      manifestKey,
+      decode(listed.nonce),
+      aad(state.shareRaw, decode(listed.id)),
+      await fetchCiphertext(listed.url),
+    );
+    const manifest = JSON.parse(new TextDecoder().decode(manifestBytes)) as Manifest;
+    if (manifest.v !== 1 || !Array.isArray(manifest.items)) return;
+    const previous = new Map(state.photos.map((photo) => [photo.id, photo.preview]));
+    state.manifest = manifest;
+    state.photos = manifest.items.map((item) => ({ ...item, preview: previous.get(item.id) }));
+    state.status = `${manifest.items.length} 张照片。新加的还在原来的链接里。`;
+    await refreshCards();
+    render();
+    await Promise.all(state.photos.map((item, index) => (item.preview ? Promise.resolve() : loadPreview(index, item))));
+    render();
+    await catchUp();
+  } catch {
+    /* 刷新失败时保留已经打开的照片 */
+  }
+}
+
+async function addFiles(files: File[]) {
+  if (!files.length || !state.api || !state.fileKey || !state.shareRaw || !state.manifest || state.adding) return;
+  if (state.photos.length + files.length > 200) {
+    state.status = "一条链接最多 200 张。";
+    render();
+    return;
+  }
+  state.adding = true;
+  state.status = "正在把照片加进原来的链接";
+  render();
+  try {
+    const items: ManifestItem[] = state.photos.map((photo) => ({
+      id: photo.id,
+      name: photo.name,
+      mime: photo.mime,
+      bytes: photo.bytes,
+      nonce: photo.nonce,
+      sha256: photo.sha256,
+      thumb: photo.thumb,
+    }));
+    const blobs = new Map<string, Uint8Array>();
+    const objects: { id: string; kind: string; plaintextBytes: number; ciphertextBytes: number }[] = [];
+    const claims: { sha256: string; kind: "shared" }[] = [];
+    for (const file of files) {
+      const plain = new Uint8Array(await file.arrayBuffer());
+      if (plain.byteLength > 50 * 1024 * 1024) throw new Error("too_large");
+      const mime = allowedMime(file.type, file.name);
+      const objectID = randomBytes(16);
+      const nonce = randomBytes(12);
+      const objectText = encode(objectID);
+      const cipher = await encrypt(state.fileKey, nonce, aad(state.shareRaw, objectID), plain);
+      blobs.set(objectText, cipher);
+      objects.push({ id: objectText, kind: "original", plaintextBytes: plain.byteLength, ciphertextBytes: cipher.byteLength });
+      const digest = await sha256(plain);
+      claims.push({ sha256: digest, kind: "shared" });
+      let thumb: ManifestItem["thumb"];
+      const jpeg = await thumbJPEG(plain, mime);
+      if (jpeg) {
+        const thumbID = randomBytes(16);
+        const thumbNonce = randomBytes(12);
+        const thumbText = encode(thumbID);
+        const thumbCipher = await encrypt(state.fileKey, thumbNonce, aad(state.shareRaw, thumbID), jpeg);
+        blobs.set(thumbText, thumbCipher);
+        objects.push({ id: thumbText, kind: "thumb", plaintextBytes: jpeg.byteLength, ciphertextBytes: thumbCipher.byteLength });
+        thumb = { id: thumbText, bytes: jpeg.byteLength, nonce: encode(thumbNonce) };
+      }
+      items.push({ id: objectText, name: file.name, mime, bytes: plain.byteLength, nonce: encode(nonce), sha256: digest, thumb });
+    }
+    const manifestPlain = new TextEncoder().encode(JSON.stringify({ v: 1, title: state.manifest.title, items }));
+    const manifestID = randomBytes(16);
+    const manifestNonce = randomBytes(12);
+    const manifestText = encode(manifestID);
+    const manifestKey = await derive(decode(keyParam), state.shareRaw, "imgmesh-manifest-v1");
+    const manifestCipher = await encrypt(manifestKey, manifestNonce, aad(state.shareRaw, manifestID), manifestPlain);
+    blobs.set(manifestText, manifestCipher);
+    objects.push({ id: manifestText, kind: "manifest", plaintextBytes: manifestPlain.byteLength, ciphertextBytes: manifestCipher.byteLength });
+    const plans = await state.api.reserve(objects);
+    const completed: { id: string; byteSize: number; parts: { partNumber: number; etag: string }[] }[] = [];
+    for (const plan of plans) {
+      const payload = blobs.get(plan.id);
+      if (!payload) throw new Error("upload_failed");
+      const parts: { partNumber: number; etag: string }[] = [];
+      if (!plan.ready) {
+        let offset = 0;
+        const chunk = plan.partSize ?? payload.byteLength;
+        for (const part of plan.parts) {
+          const end = part.partNumber === 0 ? payload.byteLength : Math.min(offset + Math.max(chunk, 1), payload.byteLength);
+          const etag = await putBlob(part.url, payload.slice(offset, end));
+          parts.push({ partNumber: part.partNumber, etag });
+          if (part.partNumber > 0) offset = end;
+        }
+      }
+      completed.push({ id: plan.id, byteSize: payload.byteLength, parts });
+    }
+    await state.api.complete(completed, manifestText, encode(manifestNonce));
+    await state.api.claim(claims).catch(() => undefined);
+    state.adding = false;
+    state.status = "已经加进原来的链接。选过自动下载的人再打开时会收到新照片，后来打开的人也可以直接下载。";
+    await refreshShare();
+    if (state.photos.length < items.length) {
+      state.manifest = { v: 1, title: state.manifest.title, items };
+      state.photos = items.map((item) => ({ ...item, preview: state.photos.find((photo) => photo.id === item.id)?.preview }));
+      await Promise.all(state.photos.map((item, index) => (item.preview ? Promise.resolve() : loadPreview(index, item))));
+      render();
+    }
+  } catch (err) {
+    state.adding = false;
+    state.status = err instanceof Error && err.message === "too_large" ? "单张不能超过 50MB。" : "这几张没有加进去，可以再试一次。";
+    render();
+  }
+}
+
+function allowedMime(type: string, name: string): string {
+  const lower = type.toLowerCase();
+  if (["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"].includes(lower)) return lower;
+  const ext = name.toLowerCase().split(".").pop();
+  if (ext === "jpg" || ext === "jpeg") return "image/jpeg";
+  if (ext === "png") return "image/png";
+  if (ext === "webp") return "image/webp";
+  if (ext === "heic") return "image/heic";
+  if (ext === "heif") return "image/heif";
+  return "image/jpeg";
+}
+
+async function thumbJPEG(plain: Uint8Array, mime: string): Promise<Uint8Array | null> {
+  if (mime === "image/heic" || mime === "image/heif") return null;
+  try {
+    const bitmap = await createImageBitmap(new Blob([plain as BlobPart], { type: mime }));
+    const scale = 480 / Math.max(bitmap.width, bitmap.height);
+    const width = Math.max(1, Math.round(bitmap.width * Math.min(1, scale)));
+    const height = Math.max(1, Math.round(bitmap.height * Math.min(1, scale)));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    canvas.getContext("2d")?.drawImage(bitmap, 0, 0, width, height);
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob((value) => resolve(value), "image/jpeg", 0.7));
+    bitmap.close();
+    if (!blob) return null;
+    return new Uint8Array(await blob.arrayBuffer());
+  } catch {
+    return null;
+  }
+}
+
+async function putBlob(url: string, data: Uint8Array): Promise<string> {
+  const res = await fetch(url, {
+    method: "PUT",
+    headers: { "Content-Type": "application/octet-stream" },
+    body: new Blob([data as BlobPart]),
+  });
+  if (!res.ok) throw new Error("upload_failed");
+  return res.headers.get("ETag") ?? "";
+}
+
 async function saveAll() {
   state.status = "正在打包原图";
   render();
@@ -587,9 +835,12 @@ async function saveAll() {
   }
   download(zipStore(files), "imgmesh.zip");
   await rememberSaved(state.photos);
+  storeSaved(state.photos.map((photo) => photo.id));
+  state.autoSave = true;
+  await state.api?.follow(true).catch(() => undefined);
   await state.api?.event("download").catch(() => undefined);
   state.activity = (await state.api?.activity()) ?? state.activity;
-  state.status = "已开始下载。每张照片的保存记录写在身份证上。";
+  state.status = "已开始下载。以后这条链接再增加照片，打开时会自动下载。";
   render();
 }
 
