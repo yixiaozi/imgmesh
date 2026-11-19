@@ -712,6 +712,88 @@ func TestAppendPhotosAndFollow(t *testing.T) {
 	}
 }
 
+func TestDesktopShareWithoutApple(t *testing.T) {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		dsn = "postgres:///imgmesh_test?host=/var/run/postgresql"
+	}
+	ctx := context.Background()
+	st, err := store.Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(st.Close)
+	if err := st.Reset(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := "http://" + ln.Addr().String()
+	api := &Server{
+		Store:          st,
+		Secret:         bytes.Repeat([]byte{9}, 32),
+		PublicBaseURL:  base,
+		Apple:          fakeApple{},
+		DiskFreeMin:    1,
+		AllowedOrigins: []string{"http://localhost:5174"},
+	}
+	srv := &http.Server{Handler: api.Handler()}
+	go srv.Serve(ln)
+	t.Cleanup(func() { srv.Close() })
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	res := do(t, client, http.MethodPost, base+"/v1/register", "", "", map[string]string{
+		"deviceId": "desktop-device-0001", "displayName": "桌面甲", "platform": "desktop",
+	})
+	if res.StatusCode != 201 {
+		t.Fatalf("register %d %s", res.StatusCode, readBody(res))
+	}
+	var owner struct {
+		Token string `json:"token"`
+	}
+	json.NewDecoder(res.Body).Decode(&owner)
+	res.Body.Close()
+
+	shareID := bytes.Repeat([]byte{0x44}, 16)
+	master := bytes.Repeat([]byte{0x55}, 32)
+	access, err := seal.AccessTag(master, shareID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res = do(t, client, http.MethodPost, base+"/v1/shares", owner.Token, "", map[string]string{
+		"id": id.Encode(shareID), "accessTag": id.Encode(access),
+	})
+	if res.StatusCode != 200 {
+		t.Fatalf("create %d %s", res.StatusCode, readBody(res))
+	}
+	res.Body.Close()
+
+	res = do(t, client, http.MethodPost, base+"/v1/register", "", "", map[string]string{
+		"deviceId": "desktop-device-0002", "displayName": "桌面乙", "platform": "desktop",
+	})
+	if res.StatusCode != 201 {
+		t.Fatalf("register peer %d %s", res.StatusCode, readBody(res))
+	}
+	var peer struct {
+		Token string `json:"token"`
+	}
+	json.NewDecoder(res.Body).Decode(&peer)
+	res.Body.Close()
+	res = do(t, client, http.MethodPost, base+"/v1/shares/"+id.Encode(shareID)+"/events", peer.Token, id.Encode(access), map[string]any{
+		"kind": "save", "client": "desktop",
+	})
+	if res.StatusCode != 204 {
+		t.Fatalf("save %d %s", res.StatusCode, readBody(res))
+	}
+	res = do(t, client, http.MethodGet, base+"/v1/shares/"+id.Encode(shareID)+"/events", owner.Token, "", nil)
+	body := readBody(res)
+	if res.StatusCode != 200 || !bytes.Contains(body, []byte("桌面乙")) || !bytes.Contains(body, []byte("phones")) {
+		t.Fatalf("events %d %s", res.StatusCode, body)
+	}
+}
+
 func fingerprint(plain string) string {
 	sum := sha256.Sum256([]byte(plain))
 	return id.Encode(sum[:])

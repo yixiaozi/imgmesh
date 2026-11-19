@@ -413,15 +413,6 @@ func (s *Server) createShare(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errBody{"bad_request"})
 		return
 	}
-	profile, err := s.Store.Profile(r.Context(), userID(r))
-	if err != nil {
-		writeStoreErr(w, err)
-		return
-	}
-	if !profile.AppleLinked {
-		writeJSON(w, http.StatusForbidden, errBody{"apple_required"})
-		return
-	}
 	if err := s.Store.CreateShare(r.Context(), userID(r), shareID, tag, body.ExpiresAt); err != nil {
 		writeStoreErr(w, err)
 		return
